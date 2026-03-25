@@ -35,9 +35,12 @@ type ImageRun = {
 };
 
 const fontPath = "C\\:/Windows/Fonts/meiryob.ttc";
+const supersampleScale = 2;
 
 const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
 const metanDims = {height: 424, width: 364, x: 1642, y: 530};
+
+const scaleValue = (value: number) => Math.round(value * supersampleScale);
 
 const buildBobYExpression = (
   baseY: number,
@@ -50,7 +53,9 @@ const buildBobYExpression = (
   const midpoint = 1;
   const amplitude = active ? 7 : 3;
   const sourceFramesPerRenderFrame = sourceFps / renderFps;
-  return `${(baseY + midpoint).toFixed(3)}+${amplitude}*sin((${cueStartFrame}+n*${sourceFramesPerRenderFrame.toFixed(
+  const scaledBaseY = scaleValue(baseY + midpoint);
+  const scaledAmplitude = amplitude * supersampleScale;
+  return `${scaledBaseY}+${scaledAmplitude}*sin((${cueStartFrame}+n*${sourceFramesPerRenderFrame.toFixed(
     6,
   )})/${radiansDivisor})`;
 };
@@ -177,26 +182,26 @@ const buildBackgroundFilter = () =>
     "format=rgba",
     "drawbox=x=0:y=0:w=iw:h=ih:color=0x9eb7f2:t=fill",
     "drawbox=x=0:y=0:w=iw:h=ih:color=0xb4c7fb@0.35:t=fill",
-    "drawgrid=width=34:height=34:thickness=1:color=white@0.12",
-    "drawbox=x=1420:y=704:w=270:h=210:color=0xffffff@0.14:t=fill",
-    "drawbox=x=104:y=824:w=400:h=150:color=0xffd2ee@0.16:t=fill",
+    `drawgrid=width=${scaleValue(34)}:height=${scaleValue(34)}:thickness=${scaleValue(1)}:color=white@0.12`,
+    `drawbox=x=${scaleValue(1420)}:y=${scaleValue(704)}:w=${scaleValue(270)}:h=${scaleValue(210)}:color=0xffffff@0.14:t=fill`,
+    `drawbox=x=${scaleValue(104)}:y=${scaleValue(824)}:w=${scaleValue(400)}:h=${scaleValue(150)}:color=0xffd2ee@0.16:t=fill`,
   ].join(",");
 
 const buildSubtitleDrawtext = (textFilePath: string, color: string) =>
   [
     `drawtext=fontfile='${fontPath}'`,
     `textfile='${escapeFilterPath(textFilePath)}'`,
-    "fontsize=50",
+    `fontsize=${scaleValue(50)}`,
     `fontcolor=${color}`,
-    "borderw=16",
+    `borderw=${scaleValue(16)}`,
     "bordercolor=white@0.96",
-    "line_spacing=6",
+    `line_spacing=${scaleValue(6)}`,
     "x=(w-text_w)/2",
-    "y=870",
+    `y=${scaleValue(870)}`,
     "text_align=center",
     "shadowcolor=white@0.35",
     "shadowx=0",
-    "shadowy=8",
+    `shadowy=${scaleValue(8)}`,
   ].join(":");
 
 const createFallbackSegment = async (
@@ -307,6 +312,9 @@ const createAgiDiscussionSegment = async (
     cue.subtitleAssetPath && fs.existsSync(cue.subtitleAssetPath)
       ? cue.subtitleAssetPath
       : undefined;
+  const compositeWidth = scaleValue(project.timeline.width);
+  const compositeHeight = scaleValue(project.timeline.height);
+  const subtitleBandY = scaleValue(852);
   const zundamonBobY = buildBobYExpression(
     zundamonDims.y,
     cue.speaker === "zundamon",
@@ -341,35 +349,36 @@ const createAgiDiscussionSegment = async (
   const filterComplex = subtitleAssetPath
     ? [
         `[0:v]${buildBackgroundFilter()}[bg]`,
-        `[1:v]format=rgba[top]`,
-        `[2:v]format=rgba[card]`,
-        `[3:v]format=rgba[subtitle]`,
-        `[4:v]fps=${fps},scale=${zundamonDims.width}:${zundamonDims.height}:flags=lanczos,format=rgba,hflip[z]`,
-        `[5:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
+        `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
+        `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
+        `[3:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[subtitle]`,
+        `[4:v]fps=${fps},scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
+        `[5:v]fps=${fps},scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
-        `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${zundamonDims.x}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${metanDims.x}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
-        `[bg4][subtitle]overlay=0:852:shortest=1:eof_action=pass[v]`,
+        `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
+        `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
+        `[bg4][subtitle]overlay=0:${subtitleBandY}:shortest=1:eof_action=pass[bg5]`,
+        `[bg5]scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
       ].join(";")
     : [
         `[0:v]${buildBackgroundFilter()}[bg]`,
-        `[1:v]format=rgba[top]`,
-        `[2:v]format=rgba[card]`,
-        `[3:v]fps=${fps},scale=${zundamonDims.width}:${zundamonDims.height}:flags=lanczos,format=rgba,hflip[z]`,
-        `[4:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
+        `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
+        `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
+        `[3:v]fps=${fps},scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
+        `[4:v]fps=${fps},scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
-        `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${zundamonDims.x}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${metanDims.x}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
-        `[bg4]drawbox=x=0:y=852:w=1920:h=228:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=852:w=1920:h=6:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor)}[v]`,
+        `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
+        `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
+        `[bg4]drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(228)}:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(6)}:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor)},scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
       ].join(";");
 
   const ffmpegArgs = [
     "-f",
     "lavfi",
     "-i",
-    `color=c=0x9eb7f2:s=${project.timeline.width}x${project.timeline.height}:r=${fps}:d=${durationSeconds}`,
+    `color=c=0x9eb7f2:s=${compositeWidth}x${compositeHeight}:r=${fps}:d=${durationSeconds}`,
     "-loop",
     "1",
     "-t",
