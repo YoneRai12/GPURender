@@ -1,0 +1,14 @@
+{
+  "lines": [
+    {
+      "speaker": "zundamon",
+      "text": "これは公開リポジトリ用のサンプルです。",
+      "speedScale": 1.15
+    },
+    {
+      "speaker": "metan",
+      "text": "GPU renderer の最小構成だけを検証します。",
+      "speedScale": 1.15
+    }
+  ]
+}

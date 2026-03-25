@@ -1,0 +1,128 @@
+{
+  "$schema": "../../schema/talk-video-project.schema.json",
+  "schemaVersion": "1.0.0",
+  "project": {
+    "id": "public-safe-sample",
+    "title": "Public Safe Sample Talk Video",
+    "language": "ja-JP",
+    "description": "公開リポジトリ用の最小サンプル。実案件や権利未確認素材には依存しない。",
+    "sourceDocuments": [
+      {
+        "label": "Public brief",
+        "path": "./source/public-brief.md"
+      }
+    ]
+  },
+  "timeline": {
+    "fps": 30,
+    "width": 1920,
+    "height": 1080,
+    "durationFrames": 450,
+    "startTimecode": "01:00:00:00",
+    "randomSeed": 1001,
+    "colorProfile": "rec709",
+    "audioMix": {
+      "combinedNarrationPath": "./public/audio/combined.wav",
+      "finalMixPath": "./public/audio/final-audio.wav",
+      "bgmPath": "./public/bgm/sample-bgm.mp3"
+    }
+  },
+  "characters": [
+    {
+      "id": "zundamon",
+      "displayName": "ずんだもん",
+      "voice": {
+        "speakerName": "ずんだもん",
+        "styleName": "ノーマル",
+        "speedScale": 1.15
+      },
+      "visual": {
+        "accent": "#8adf47",
+        "accentSoft": "#dff7c7",
+        "avatarPath": "./public/tachie/zundamon/faces/normal.png",
+        "blinkUpperPath": "./public/tachie/zundamon/upper/normal-blink.png",
+        "defaultExpression": "normal",
+        "upperDir": "./public/tachie/zundamon/upper"
+      }
+    },
+    {
+      "id": "metan",
+      "displayName": "四国めたん",
+      "voice": {
+        "speakerName": "四国めたん",
+        "styleName": "ノーマル",
+        "speedScale": 1.15
+      },
+      "visual": {
+        "accent": "#9a6cff",
+        "accentSoft": "#eadfff",
+        "avatarPath": "./public/tachie/metan/faces/normal.png",
+        "blinkUpperPath": "./public/tachie/metan/upper/normal-blink.png",
+        "defaultExpression": "normal",
+        "upperDir": "./public/tachie/metan/upper"
+      }
+    }
+  ],
+  "style": {
+    "layout": "agi-discussion-v1",
+    "subtitleBand": {
+      "alwaysVisible": true,
+      "showSpeakerName": false,
+      "maxLines": 2,
+      "lineBreakRule": "punctuation-balanced",
+      "speakerColors": {
+        "zundamon": "#8adf47",
+        "metan": "#9a6cff"
+      }
+    },
+    "cardLayout": {
+      "mainCardWidth": 1410,
+      "mainCardHeight": 688,
+      "innerPanelStyle": "white-surface"
+    },
+    "characterLayout": {
+      "zundamonFacing": "right",
+      "zundamonPinned": "left",
+      "metanPinned": "right",
+      "activeScale": 1.0
+    }
+  },
+  "sources": {
+    "projectRoot": "./",
+    "scriptJsonPath": "./source/script.json",
+    "conversationManifestPath": "./source/conversation.manifest.json",
+    "remotionSceneSourcePath": "./source/scene-template.tsx",
+    "cueDataPath": "./source/cueData.ts",
+    "mouthDataPath": "./source/mouthData.ts",
+    "publicConversationDir": "./public"
+  },
+  "renderTargets": {
+    "remotion": {
+      "compositionId": "AgiDiscussion",
+      "projectDir": "../../renderers/remotion",
+      "outputPath": "../../out/public-safe-sample-remotion.mp4"
+    },
+    "resolve": {
+      "exportDir": "../../out/resolve-public-safe-sample",
+      "outputPath": "../../out/public-safe-sample-resolve.mp4",
+      "timelineFormatPreference": [
+        "otio",
+        "fcpxml"
+      ]
+    },
+    "gpu": {
+      "rendererProjectDir": "../../renderers/gpu",
+      "outputPath": "../../out/public-safe-sample-gpu.mp4",
+      "sceneTemplate": "agi-discussion"
+    }
+  },
+  "sceneOverrides": [
+    {
+      "cueIndex": 1,
+      "template": "intro-overview",
+      "title": "公開サンプルの概要",
+      "description": "会話動画専用 GPU renderer の最小検証"
+    }
+  ],
+  "lineOverrides": []
+}

@@ -1,0 +1,12 @@
+{
+  "lines": [
+    {
+      "speaker": "speaker-a",
+      "text": "これは public-safe なサンプルです。"
+    },
+    {
+      "speaker": "speaker-b",
+      "text": "実素材ではなく、構造確認だけを目的にしています。"
+    }
+  ]
+}
