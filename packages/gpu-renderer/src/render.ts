@@ -35,8 +35,8 @@ type ImageRun = {
 
 const fontPath = "C\\:/Windows/Fonts/meiryob.ttc";
 
-const zundamonDims = {height: 430, width: 353, x: -72, y: 536};
-const metanDims = {height: 430, width: 369, x: 1647, y: 536};
+const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
+const metanDims = {height: 424, width: 364, x: 1642, y: 530};
 
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
   log(`ffmpeg ${args.join(" ")}`);
@@ -299,9 +299,9 @@ const createAgiDiscussionSegment = async (
         `[5:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][subtitle]overlay=0:852:shortest=1:eof_action=pass[bg3]`,
-        `[bg3][z]overlay=${zundamonDims.x}:${zundamonDims.y}+4*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg4]`,
-        `[bg4][m]overlay=${metanDims.x}:${metanDims.y}+4*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[v]`,
+        `[bg2][z]overlay=${zundamonDims.x}:${zundamonDims.y}+2.5*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${metanDims.x}:${metanDims.y}+2.5*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[bg4]`,
+        `[bg4][subtitle]overlay=0:852:shortest=1:eof_action=pass[v]`,
       ].join(";")
     : [
         `[0:v]${buildBackgroundFilter()}[bg]`,
@@ -311,8 +311,8 @@ const createAgiDiscussionSegment = async (
         `[4:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${zundamonDims.x}:${zundamonDims.y}+4*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${metanDims.x}:${metanDims.y}+4*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[bg4]`,
+        `[bg2][z]overlay=${zundamonDims.x}:${zundamonDims.y}+2.5*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${metanDims.x}:${metanDims.y}+2.5*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[bg4]`,
         `[bg4]drawbox=x=0:y=852:w=1920:h=228:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=852:w=1920:h=6:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor)}[v]`,
       ].join(";");
 
@@ -366,6 +366,14 @@ const createAgiDiscussionSegment = async (
     "-an",
     "-frames:v",
     `${cue.durationFrames}`,
+    "-fps_mode",
+    "cfr",
+    "-r",
+    `${fps}`,
+    "-g",
+    `${fps}`,
+    "-bf",
+    "0",
     "-c:v",
     "h264_nvenc",
     "-preset",
@@ -459,8 +467,22 @@ export const renderProjectGpuDemo = async (
       "0",
       "-i",
       concatListPath,
-      "-c",
-      "copy",
+      "-vf",
+      `fps=${project.timeline.fps}`,
+      "-fps_mode",
+      "cfr",
+      "-r",
+      `${project.timeline.fps}`,
+      "-frames:v",
+      `${project.timeline.durationFrames}`,
+      "-c:v",
+      "h264_nvenc",
+      "-preset",
+      "p5",
+      "-cq",
+      "18",
+      "-pix_fmt",
+      "yuv420p",
       videoOnlyPath,
     ],
     log,
