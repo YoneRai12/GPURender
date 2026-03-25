@@ -39,6 +39,21 @@ const fontPath = "C\\:/Windows/Fonts/meiryob.ttc";
 const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
 const metanDims = {height: 424, width: 364, x: 1642, y: 530};
 
+const buildBobYExpression = (
+  baseY: number,
+  active: boolean,
+  cueStartFrame: number,
+  sourceFps: number,
+  radiansDivisor: number,
+) => {
+  const cueStartSeconds = cueStartFrame / sourceFps;
+  const midpoint = 1;
+  const amplitude = active ? 7 : 3;
+  return `${(baseY + midpoint).toFixed(3)}+${amplitude}*sin((t+${cueStartSeconds.toFixed(
+    6,
+  )})*${sourceFps}/${radiansDivisor})`;
+};
+
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
   log(`ffmpeg ${args.join(" ")}`);
   await execFileAsync("ffmpeg", ["-y", ...args], {
@@ -291,6 +306,20 @@ const createAgiDiscussionSegment = async (
     cue.subtitleAssetPath && fs.existsSync(cue.subtitleAssetPath)
       ? cue.subtitleAssetPath
       : undefined;
+  const zundamonBobY = buildBobYExpression(
+    zundamonDims.y,
+    cue.speaker === "zundamon",
+    cue.startFrame,
+    sourceFps,
+    28,
+  );
+  const metanBobY = buildBobYExpression(
+    metanDims.y,
+    cue.speaker === "metan",
+    cue.startFrame,
+    sourceFps,
+    31,
+  );
 
   if (!topPath || !cardPath) {
     await createFallbackSegment(
@@ -316,8 +345,8 @@ const createAgiDiscussionSegment = async (
         `[5:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${zundamonDims.x}:${zundamonDims.y}+2.5*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${metanDims.x}:${metanDims.y}+2.5*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[bg4]`,
+        `[bg2][z]overlay=${zundamonDims.x}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${metanDims.x}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
         `[bg4][subtitle]overlay=0:852:shortest=1:eof_action=pass[v]`,
       ].join(";")
     : [
@@ -328,8 +357,8 @@ const createAgiDiscussionSegment = async (
         `[4:v]fps=${fps},scale=${metanDims.width}:${metanDims.height}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=255:138:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${zundamonDims.x}:${zundamonDims.y}+2.5*sin(2*PI*t/0.95):shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${metanDims.x}:${metanDims.y}+2.5*sin(2*PI*t/1.08+1.1):shortest=1:eof_action=pass[bg4]`,
+        `[bg2][z]overlay=${zundamonDims.x}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
+        `[bg3][m]overlay=${metanDims.x}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
         `[bg4]drawbox=x=0:y=852:w=1920:h=228:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=852:w=1920:h=6:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor)}[v]`,
       ].join(";");
 
