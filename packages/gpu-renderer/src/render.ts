@@ -44,14 +44,15 @@ const buildBobYExpression = (
   active: boolean,
   cueStartFrame: number,
   sourceFps: number,
+  renderFps: number,
   radiansDivisor: number,
 ) => {
-  const cueStartSeconds = cueStartFrame / sourceFps;
   const midpoint = 1;
   const amplitude = active ? 7 : 3;
-  return `${(baseY + midpoint).toFixed(3)}+${amplitude}*sin((t+${cueStartSeconds.toFixed(
+  const sourceFramesPerRenderFrame = sourceFps / renderFps;
+  return `${(baseY + midpoint).toFixed(3)}+${amplitude}*sin((${cueStartFrame}+n*${sourceFramesPerRenderFrame.toFixed(
     6,
-  )})*${sourceFps}/${radiansDivisor})`;
+  )})/${radiansDivisor})`;
 };
 
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
@@ -311,6 +312,7 @@ const createAgiDiscussionSegment = async (
     cue.speaker === "zundamon",
     cue.startFrame,
     sourceFps,
+    fps,
     28,
   );
   const metanBobY = buildBobYExpression(
@@ -318,6 +320,7 @@ const createAgiDiscussionSegment = async (
     cue.speaker === "metan",
     cue.startFrame,
     sourceFps,
+    fps,
     31,
   );
 
