@@ -137,6 +137,7 @@ export type RenderPlan = {
     template: string;
     colorProfile?: string;
     randomSeed?: number;
+    sourceFps?: number;
   };
   assets: {
     characterCount: number;
