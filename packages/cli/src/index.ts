@@ -12,6 +12,7 @@ type CommandArgs = {
   cpuTempLimit?: number;
   cooldownMs?: number;
   segmentSeconds?: number;
+  renderFps?: number;
 };
 
 const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
@@ -49,6 +50,12 @@ const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
     if (token === "--segment-seconds" && next) {
       args.segmentSeconds = Number.parseInt(next, 10);
       index += 1;
+      continue;
+    }
+
+    if (token === "--render-fps" && next) {
+      args.renderFps = Number.parseInt(next, 10);
+      index += 1;
     }
   }
 
@@ -59,7 +66,7 @@ const printUsage = () => {
   console.log("Usage:");
   console.log("  gpu-render validate --project ./examples/public-safe-sample/project.json");
   console.log(
-    "  gpu-render render --project ./examples/public-safe-sample/project.json --out ./out/public-safe-sample-gpu.mp4 --cpu-temp-limit 85 --cooldown-ms 3000",
+    "  gpu-render render --project ./examples/public-safe-sample/project.json --out ./out/public-safe-sample-gpu.mp4 --render-fps 60 --cpu-temp-limit 85 --cooldown-ms 3000",
   );
 };
 
@@ -105,7 +112,7 @@ const handleRender = async (projectPath: string, args: CommandArgs) => {
         project.renderTargets.gpu.outputPath ?? "./out/render.mp4",
       );
 
-  const dryRun = createDryRunRenderPlan(result, outputPath);
+  const dryRun = createDryRunRenderPlan(result, outputPath, args.renderFps);
   const planPath = `${outputPath}.plan.json`;
 
   await mkdir(path.dirname(planPath), {recursive: true});
@@ -120,6 +127,7 @@ const handleRender = async (projectPath: string, args: CommandArgs) => {
     cpuTempLimitC: args.cpuTempLimit ?? null,
     cooldownMs: args.cooldownMs,
     segmentSeconds: args.segmentSeconds,
+    renderFps: args.renderFps,
     log: (message) => console.log(`[render] ${message}`),
   });
 
@@ -129,6 +137,7 @@ const handleRender = async (projectPath: string, args: CommandArgs) => {
     `${JSON.stringify(
       {
         outputPath: renderResult.outputPath,
+        renderFps: args.renderFps ?? project.timeline.fps,
         tempSamples: renderResult.tempSamples,
         segmentCount: renderResult.segmentFiles.length,
       },

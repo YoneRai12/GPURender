@@ -19,6 +19,7 @@ export type RenderOptions = {
   cpuTempLimitC?: number | null;
   cooldownMs?: number;
   segmentSeconds?: number;
+  renderFps?: number;
   log?: (message: string) => void;
 };
 
@@ -129,7 +130,10 @@ const buildCharacterRuns = (
   speaker: SpeakerId,
   cueIndex: number,
   cueStartFrame: number,
-  durationFrames: number,
+  sourceDurationFrames: number,
+  renderFrameCount: number,
+  sourceFps: number,
+  renderFps: number,
   mouthTimingByCue: string[][],
   blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
   activeSpeaker: SpeakerId,
@@ -137,11 +141,15 @@ const buildCharacterRuns = (
   const paths: string[] = [];
   const mouthFrames = mouthTimingByCue[cueIndex] ?? [];
 
-  for (let localFrame = 0; localFrame < durationFrames; localFrame += 1) {
-    const absoluteFrame = cueStartFrame + localFrame;
+  for (let localFrame = 0; localFrame < renderFrameCount; localFrame += 1) {
+    const sourceLocalFrame = Math.min(
+      sourceDurationFrames - 1,
+      Math.floor((localFrame * sourceFps) / renderFps),
+    );
+    const absoluteFrame = cueStartFrame + sourceLocalFrame;
     const blink = isBlinking(absoluteFrame, speaker, blinkWindowsBySpeaker);
     const mouth =
-      speaker === activeSpeaker ? mouthFrames[localFrame] ?? "closed" : "closed";
+      speaker === activeSpeaker ? mouthFrames[sourceLocalFrame] ?? "closed" : "closed";
     paths.push(getUpperBodyPath(projectPath, project, speaker, mouth, blink));
   }
 
@@ -229,10 +237,13 @@ const createAgiDiscussionSegment = async (
   blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
   tempRoot: string,
   segmentPath: string,
+  renderFps: number,
   log: (message: string) => void,
 ) => {
-  const fps = project.timeline.fps;
-  const durationSeconds = cue.durationFrames / fps;
+  const sourceFps = project.timeline.fps;
+  const fps = renderFps;
+  const durationSeconds = cue.durationFrames / sourceFps;
+  const renderFrameCount = Math.max(1, Math.round(durationSeconds * fps));
   const zListPath = path.join(tempRoot, `cue-${String(cue.index + 1).padStart(2, "0")}-z.txt`);
   const mListPath = path.join(tempRoot, `cue-${String(cue.index + 1).padStart(2, "0")}-m.txt`);
   const subtitleTextPath = path.join(
@@ -246,6 +257,9 @@ const createAgiDiscussionSegment = async (
     cue.index,
     cue.startFrame,
     cue.durationFrames,
+    renderFrameCount,
+    sourceFps,
+    fps,
     mouthTimingByCue,
     blinkWindowsBySpeaker,
     cue.speaker,
@@ -257,6 +271,9 @@ const createAgiDiscussionSegment = async (
     cue.index,
     cue.startFrame,
     cue.durationFrames,
+    renderFrameCount,
+    sourceFps,
+    fps,
     mouthTimingByCue,
     blinkWindowsBySpeaker,
     cue.speaker,
@@ -281,7 +298,7 @@ const createAgiDiscussionSegment = async (
       durationSeconds,
       project.timeline.width,
       project.timeline.height,
-      project.timeline.fps,
+      fps,
       project.style.subtitleBand.speakerColors?.zundamon ?? "#8adf47",
       project.style.subtitleBand.speakerColors?.metan ?? "#9a6cff",
       log,
@@ -365,7 +382,7 @@ const createAgiDiscussionSegment = async (
     "[v]",
     "-an",
     "-frames:v",
-    `${cue.durationFrames}`,
+    `${renderFrameCount}`,
     "-fps_mode",
     "cfr",
     "-r",
@@ -423,6 +440,10 @@ export const renderProjectGpuDemo = async (
   const tempSamples: number[] = [];
   const projectPath = path.resolve(options.projectPath);
   const cooldownMs = options.cooldownMs ?? 3000;
+  const sourceFps = project.timeline.fps;
+  const renderFps = options.renderFps ?? sourceFps;
+  const totalDurationSeconds = project.timeline.durationFrames / sourceFps;
+  const totalRenderFrames = Math.max(1, Math.round(totalDurationSeconds * renderFps));
 
   await fsPromises.mkdir(outputDir, {recursive: true});
 
@@ -446,6 +467,7 @@ export const renderProjectGpuDemo = async (
       blinkWindowsBySpeaker,
       tempRoot,
       segmentPath,
+      renderFps,
       log,
     );
     segmentFiles.push(segmentPath);
@@ -468,13 +490,17 @@ export const renderProjectGpuDemo = async (
       "-i",
       concatListPath,
       "-vf",
-      `fps=${project.timeline.fps}`,
+      `fps=${renderFps}`,
       "-fps_mode",
       "cfr",
       "-r",
-      `${project.timeline.fps}`,
+      `${renderFps}`,
       "-frames:v",
-      `${project.timeline.durationFrames}`,
+      `${totalRenderFrames}`,
+      "-g",
+      `${renderFps}`,
+      "-bf",
+      "0",
       "-c:v",
       "h264_nvenc",
       "-preset",
