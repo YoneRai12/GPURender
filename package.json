@@ -1,0 +1,23 @@
+{
+  "name": "gpu-render",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GPU-first talk video renderer v0 scaffold",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b packages/shared packages/gpu-renderer packages/cli",
+    "typecheck": "tsc -b --pretty false",
+    "cli": "node ./packages/cli/dist/index.js",
+    "validate:example": "node ./packages/cli/dist/index.js validate --project ./examples/public-safe-sample/project.json",
+    "render:example": "node ./packages/cli/dist/index.js render --project ./examples/public-safe-sample/project.json --out ./out/public-safe-sample-gpu.mp4"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.9.3"
+  }
+}

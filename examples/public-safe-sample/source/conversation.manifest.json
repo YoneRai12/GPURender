@@ -1,0 +1,18 @@
+{
+  "fps": 30,
+  "lines": [
+    {
+      "index": 1,
+      "speaker": "zundamon",
+      "durationFrames": 210,
+      "audioPath": "./public/audio/01-zundamon.wav"
+    },
+    {
+      "index": 2,
+      "speaker": "metan",
+      "durationFrames": 240,
+      "audioPath": "./public/audio/02-metan.wav"
+    }
+  ],
+  "combinedPath": "./public/audio/combined.wav"
+}
