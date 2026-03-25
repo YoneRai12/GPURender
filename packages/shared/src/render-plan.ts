@@ -5,6 +5,7 @@ import type {RenderPlan, ValidationResult} from "./types.js";
 export const createDryRunRenderPlan = (
   validation: ValidationResult,
   outputPath: string,
+  renderFps?: number,
 ): RenderPlan => {
   if (!validation.project) {
     throw new Error("Cannot build a render plan from an invalid project.");
@@ -12,6 +13,8 @@ export const createDryRunRenderPlan = (
 
   const project = validation.project;
   const resolvedOutputPath = path.resolve(process.cwd(), outputPath);
+  const outputFps = renderFps ?? project.timeline.fps;
+  const estimatedSeconds = project.timeline.durationFrames / project.timeline.fps;
 
   return {
     mode: "dry-run",
@@ -23,15 +26,16 @@ export const createDryRunRenderPlan = (
     composition: {
       width: project.timeline.width,
       height: project.timeline.height,
-      fps: project.timeline.fps,
-      durationFrames: project.timeline.durationFrames,
-      estimatedSeconds: project.timeline.durationFrames / project.timeline.fps,
+      fps: outputFps,
+      durationFrames: Math.round(estimatedSeconds * outputFps),
+      estimatedSeconds,
     },
     renderer: {
       target: "gpu",
       template: project.renderTargets.gpu.sceneTemplate,
       colorProfile: project.timeline.colorProfile,
       randomSeed: project.timeline.randomSeed,
+      sourceFps: project.timeline.fps,
     },
     assets: {
       characterCount: project.characters.length,
