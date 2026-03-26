@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import json
+import math
 import os
 import sys
 import time
@@ -170,7 +171,7 @@ def _timecode_to_frame_count(timecode, fps):
 
 
 def _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, items):
-    created_items = []
+    created_items_by_id = {}
     for item in items:
         source_path = os.path.normcase(os.path.abspath(item["path"]))
         media_pool_item = imported_by_path.get(source_path)
@@ -189,8 +190,118 @@ def _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, i
         if not appended:
             raise RuntimeError(f"Unable to append item to timeline: {item['id']}")
         _apply_timeline_item_properties(appended, item)
-        created_items.extend(appended)
-    return created_items
+        created_items_by_id[item["id"]] = appended
+    return created_items_by_id
+
+
+def _set_comp_time(comp, frame):
+    if hasattr(comp, "_SetCurrentTime"):
+        comp._SetCurrentTime(int(frame))
+        return
+
+    if hasattr(comp, "SetCurrentTime"):
+        comp.SetCurrentTime(int(frame))
+        return
+
+    raise RuntimeError("Fusion composition does not expose a time setter.")
+
+
+def _connect_media_output(media_out, tool):
+    ok = media_out.ConnectInput("Input", tool)
+    if not ok:
+        raise RuntimeError("Unable to connect Fusion tool to MediaOut.")
+
+
+def _build_character_fusion(item, animation, fps):
+    if not animation:
+        return {"created": False, "reason": "animation-config-missing"}
+
+    comp = item.AddFusionComp()
+    if not comp:
+        return {"created": False, "reason": "add-fusion-comp-failed"}
+
+    media_out = comp.FindTool("MediaOut1")
+    if not media_out:
+        return {"created": False, "reason": "media-out-missing"}
+
+    loaders = {}
+    dissolves = {}
+    transform = None
+    comp.Lock()
+    try:
+        for key in ("closed", "mid", "open", "blink"):
+            tool = comp.AddTool("Loader")
+            if not tool:
+                raise RuntimeError(f"Unable to create Loader for {key}")
+            tool.SetInput("Clip", os.path.abspath(animation["assets"][key]))
+            loaders[key] = tool
+
+        dissolves["closed_mid"] = comp.AddTool("Dissolve")
+        dissolves["mouth"] = comp.AddTool("Dissolve")
+        dissolves["blink"] = comp.AddTool("Dissolve")
+        transform = comp.AddTool("Transform")
+        if not dissolves["closed_mid"] or not dissolves["mouth"] or not dissolves["blink"] or not transform:
+            raise RuntimeError("Unable to create Fusion blend tools")
+
+        dissolves["closed_mid"].ConnectInput("Background", loaders["closed"])
+        dissolves["closed_mid"].ConnectInput("Foreground", loaders["mid"])
+
+        dissolves["mouth"].ConnectInput("Background", dissolves["closed_mid"])
+        dissolves["mouth"].ConnectInput("Foreground", loaders["open"])
+
+        dissolves["blink"].ConnectInput("Background", dissolves["mouth"])
+        dissolves["blink"].ConnectInput("Foreground", loaders["blink"])
+
+        transform.ConnectInput("Input", dissolves["blink"])
+        _connect_media_output(media_out, transform)
+
+        mouth_by_frame = animation.get("mouthByFrame") or []
+        blink_by_frame = animation.get("blinkByFrame") or []
+        frame_count = max(len(mouth_by_frame), len(blink_by_frame))
+        amplitude = float(animation["bob"]["amplitude"])
+        frequency_hz = float(animation["bob"]["frequencyHz"])
+        phase_offset = float(animation["bob"]["phaseOffset"])
+
+        for frame in range(frame_count):
+            _set_comp_time(comp, frame)
+            mouth = mouth_by_frame[frame] if frame < len(mouth_by_frame) else "closed"
+            blink = bool(blink_by_frame[frame]) if frame < len(blink_by_frame) else False
+
+            dissolves["closed_mid"].SetInput("Mix", 1.0 if mouth == "mid" else 0.0)
+            dissolves["mouth"].SetInput("Mix", 1.0 if mouth == "open" else 0.0)
+            dissolves["blink"].SetInput("Mix", 1.0 if blink else 0.0)
+
+            y = 0.5 + amplitude * math.sin(((frame / float(fps)) * (math.pi * 2.0) * frequency_hz) + phase_offset)
+            transform.SetInput("Center", {1: 0.5, 2: y})
+            transform.SetInput("Size", 1.0)
+
+        _set_comp_time(comp, 0)
+    finally:
+        comp.Unlock()
+
+    return {
+        "created": True,
+        "frameCount": frame_count,
+        "speaker": animation.get("speaker"),
+    }
+
+
+def _apply_character_fusions(created_video_items_by_id, manifest):
+    animation_results = []
+    fps = int(manifest["fps"])
+    for animation in manifest.get("characterAnimations") or []:
+        item_id = animation.get("itemId")
+        created_items = created_video_items_by_id.get(item_id) or []
+        if not created_items:
+            animation_results.append(
+                {"created": False, "itemId": item_id, "reason": "timeline-item-missing"}
+            )
+            continue
+        timeline_item = created_items[0]
+        result = _build_character_fusion(timeline_item, animation, fps)
+        result["itemId"] = item_id
+        animation_results.append(result)
+    return animation_results
 
 
 def _append_subtitle_srt(media_pool, target_folder, timeline, timeline_start_frame, manifest, subtitle_config):
@@ -372,10 +483,11 @@ def main():
         and (not manifest.get("subtitle") or item["trackIndex"] != manifest["subtitle"]["sourceAudioTrackIndex"])
     ]
 
-    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(video_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
+    created_video_items_by_id = _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(video_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
     _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(narration_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
     _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(other_audio_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
     subtitle_result = _create_subtitles(resolve, media_pool, target_folder, timeline, manifest)
+    fusion_result = _apply_character_fusions(created_video_items_by_id, manifest)
     timeline.SetCurrentTimecode(manifest["startTimecode"])
 
     project_manager.SaveProject()
@@ -389,6 +501,7 @@ def main():
             "ok": True,
             "projectName": project.GetName(),
             "subtitle": subtitle_result,
+            "fusion": fusion_result,
             "timelineName": timeline.GetName(),
             "timelineStartFrame": timeline_start_frame,
         },
