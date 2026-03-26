@@ -113,6 +113,15 @@ def _write_result(result_path, payload):
         handle.write("\n")
 
 
+def _timecode_to_frame_count(timecode, fps):
+    parts = [int(part) for part in str(timecode).split(":")]
+    if len(parts) != 4:
+        raise RuntimeError(f"Unsupported timecode format: {timecode}")
+
+    hours, minutes, seconds, frames = parts
+    return (((hours * 60) + minutes) * 60 + seconds) * int(fps) + frames
+
+
 def main():
     request = _load_request_payload()
     manifest_path = request["manifestPath"]
@@ -155,6 +164,7 @@ def main():
 
     project.SetCurrentTimeline(timeline)
     timeline.SetStartTimecode(manifest["startTimecode"])
+    timeline_start_frame = _timecode_to_frame_count(manifest["startTimecode"], manifest["fps"])
 
     _ensure_track_count(timeline, "video", len(manifest["videoTracks"]))
     _ensure_track_count(timeline, "audio", len(manifest["audioTracks"]))
@@ -174,7 +184,7 @@ def main():
             "mediaPoolItem": media_pool_item,
             "startFrame": 0,
             "endFrame": max(0, int(item["durationFrames"]) - 1),
-            "recordFrame": int(item["recordFrame"]),
+            "recordFrame": timeline_start_frame + int(item["recordFrame"]),
             "trackIndex": int(item["trackIndex"]),
             "mediaType": 2 if item["trackType"] == "audio" else 1,
         }
@@ -191,6 +201,7 @@ def main():
             "ok": True,
             "projectName": project.GetName(),
             "timelineName": timeline.GetName(),
+            "timelineStartFrame": timeline_start_frame,
         },
     )
     if request["requestPath"] and os.path.exists(request["requestPath"]):
