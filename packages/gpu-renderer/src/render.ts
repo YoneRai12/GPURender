@@ -35,7 +35,7 @@ type ImageRun = {
 };
 
 const fontPath = "C\\:/Windows/Fonts/meiryob.ttc";
-const supersampleScale = 2;
+const supersampleScale = 3;
 
 const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
 const metanDims = {height: 424, width: 364, x: 1642, y: 530};
@@ -225,7 +225,7 @@ const buildBackgroundFilter = () =>
     `drawbox=x=${scaleValue(104)}:y=${scaleValue(824)}:w=${scaleValue(400)}:h=${scaleValue(150)}:color=0xffd2ee@0.16:t=fill`,
   ].join(",");
 
-const buildSubtitleDrawtext = (textFilePath: string, color: string) =>
+const buildSubtitleDrawtext = (textFilePath: string, color: string, y: number) =>
   [
     `drawtext=fontfile='${fontPath}'`,
     `textfile='${escapeFilterPath(textFilePath)}'`,
@@ -235,7 +235,7 @@ const buildSubtitleDrawtext = (textFilePath: string, color: string) =>
     "bordercolor=white@0.96",
     `line_spacing=${scaleValue(6)}`,
     "x=(w-text_w)/2",
-    `y=${scaleValue(870)}`,
+    `y=${y}`,
     "text_align=center",
     "shadowcolor=white@0.35",
     "shadowx=0",
@@ -354,7 +354,8 @@ const createAgiDiscussionSegment = async (
       : undefined;
   const compositeWidth = scaleValue(project.timeline.width);
   const compositeHeight = scaleValue(project.timeline.height);
-  const subtitleBandY = scaleValue(852);
+  const subtitleBandY = scaleValue(826);
+  const subtitleTextY = scaleValue(844);
   const zundamonStartAmplitude = previousCue?.speaker === "zundamon" ? 7 : 3;
   const zundamonTargetAmplitude = cue.speaker === "zundamon" ? 7 : 3;
   const zundamonEndAmplitude = nextCue?.speaker === "zundamon" ? 7 : 3;
@@ -423,7 +424,7 @@ const createAgiDiscussionSegment = async (
         `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
         `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
         `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
-        `[bg4]drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(228)}:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(6)}:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor)},scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
+        `[bg4]drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(228)}:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(6)}:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor, subtitleTextY)},scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
       ].join(";");
 
   const ffmpegArgs = [
