@@ -24,9 +24,16 @@ const resolveUserScriptsUtilityDir = path.join(
 const menuLoaderFileName = "GPURender_LoadTimeline.py";
 const menuRequestFileName = "GPURender_LoadTimeline.request.json";
 
-const zundamonLayout = {flipX: true, targetHeight: 424, targetWidth: 348, targetX: -66, targetY: 530};
-const metanLayout = {flipX: false, targetHeight: 424, targetWidth: 364, targetX: 1642, targetY: 530};
 const cardLayout = {targetX: 255, targetY: 138};
+const characterLayoutDefaults = {
+  bottomMargin: 126,
+  targetHeight: 424,
+  visibleWidth: 280,
+};
+const speakerTrackMap = {
+  metan: {index: 2, name: "四国めたん"},
+  zundamon: {index: 1, name: "ずんだもん"},
+} as const satisfies Record<SpeakerId, {index: number; name: string}>;
 
 type SubtitleMode = "auto-from-audio";
 type SubtitleLineBreak = "single" | "double";
@@ -200,6 +207,16 @@ const getClosedUpperBodyPath = (
   const upperDir = resolveFromProject(projectPath, character.visual.upperDir);
   const expression = character.visual.defaultExpression ?? "normal";
   return path.join(upperDir, `${expression}-closed.png`);
+};
+
+const getConversationAudioPath = (
+  projectPath: string,
+  project: TalkVideoProject,
+  cueIndex: number,
+  speaker: SpeakerId,
+) => {
+  const conversationDir = resolveFromProject(projectPath, project.sources.publicConversationDir);
+  return path.join(conversationDir, "audio", `${String(cueIndex + 1).padStart(2, "0")}-${speaker}.wav`);
 };
 
 const copyAsset = async (sourcePath: string, outputPath: string) => {
@@ -378,7 +395,7 @@ const normalizeNarrationAudio = async (
   );
 };
 
-const normalizeStereoAudio = async (
+const normalizeMonoAudio = async (
   inputPath: string,
   outputPath: string,
   log: (message: string) => void,
@@ -392,7 +409,7 @@ const normalizeStereoAudio = async (
       "-ar",
       "48000",
       "-ac",
-      "2",
+      "1",
       "-c:a",
       "pcm_s16le",
       outputPath,
@@ -414,6 +431,37 @@ const prepareExportDir = async (requestedDir: string) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     return `${requestedDir}-${timestamp}`;
   }
+};
+
+const createAutoCharacterLayout = ({
+  flipX,
+  frameHeight,
+  frameWidth,
+  sourceHeight,
+  sourceWidth,
+  speaker,
+}: {
+  flipX: boolean;
+  frameHeight: number;
+  frameWidth: number;
+  sourceHeight: number;
+  sourceWidth: number;
+  speaker: SpeakerId;
+}) => {
+  const targetHeight = characterLayoutDefaults.targetHeight;
+  const targetWidth = Math.round((sourceWidth / sourceHeight) * targetHeight);
+  const visibleWidth = Math.min(targetWidth - 12, characterLayoutDefaults.visibleWidth);
+  const targetX =
+    speaker === "zundamon" ? visibleWidth - targetWidth : frameWidth - visibleWidth;
+  const targetY = frameHeight - characterLayoutDefaults.bottomMargin - targetHeight;
+
+  return {
+    flipX,
+    targetHeight,
+    targetWidth,
+    targetX,
+    targetY,
+  };
 };
 
 export const exportProjectForResolve = async (
@@ -474,21 +522,38 @@ export const exportProjectForResolve = async (
   const zundamonSize = await readImageDimensions(zundamonStillPath, log);
   const metanSize = await readImageDimensions(metanStillPath, log);
 
+  const zundamonPlacement = createAutoCharacterLayout({
+    flipX: true,
+    frameHeight: project.timeline.height,
+    frameWidth: project.timeline.width,
+    sourceHeight: zundamonSize.height,
+    sourceWidth: zundamonSize.width,
+    speaker: "zundamon",
+  });
+  const metanPlacement = createAutoCharacterLayout({
+    flipX: false,
+    frameHeight: project.timeline.height,
+    frameWidth: project.timeline.width,
+    sourceHeight: metanSize.height,
+    sourceWidth: metanSize.width,
+    speaker: "metan",
+  });
+
   manifestItems.push(
     {
       durationFrames: project.timeline.durationFrames,
       id: "zundamon-full",
       path: zundamonClipPath,
       properties: createPlacedStillProperties({
-        flipX: zundamonLayout.flipX,
+        flipX: zundamonPlacement.flipX,
         frameHeight: project.timeline.height,
         frameWidth: project.timeline.width,
         sourceHeight: zundamonSize.height,
         sourceWidth: zundamonSize.width,
-        targetHeight: zundamonLayout.targetHeight,
-        targetWidth: zundamonLayout.targetWidth,
-        targetX: zundamonLayout.targetX,
-        targetY: zundamonLayout.targetY,
+        targetHeight: zundamonPlacement.targetHeight,
+        targetWidth: zundamonPlacement.targetWidth,
+        targetX: zundamonPlacement.targetX,
+        targetY: zundamonPlacement.targetY,
       }),
       recordFrame: 0,
       trackIndex: 2,
@@ -499,15 +564,15 @@ export const exportProjectForResolve = async (
       id: "metan-full",
       path: metanClipPath,
       properties: createPlacedStillProperties({
-        flipX: metanLayout.flipX,
+        flipX: metanPlacement.flipX,
         frameHeight: project.timeline.height,
         frameWidth: project.timeline.width,
         sourceHeight: metanSize.height,
         sourceWidth: metanSize.width,
-        targetHeight: metanLayout.targetHeight,
-        targetWidth: metanLayout.targetWidth,
-        targetX: metanLayout.targetX,
-        targetY: metanLayout.targetY,
+        targetHeight: metanPlacement.targetHeight,
+        targetWidth: metanPlacement.targetWidth,
+        targetX: metanPlacement.targetX,
+        targetY: metanPlacement.targetY,
       }),
       recordFrame: 0,
       trackIndex: 3,
@@ -547,38 +612,23 @@ export const exportProjectForResolve = async (
     });
   }
 
-  const narrationPath = path.join(audioDir, "narration.wav");
-  await normalizeNarrationAudio(
-    resolveFromProject(absoluteProjectPath, project.timeline.audioMix.combinedNarrationPath),
-    narrationPath,
-    log,
-  );
-  const shouldIncludeResolveBgm =
-    resolveExportAudioMode.includeBgm && Boolean(project.timeline.audioMix.bgmPath);
-  const bgmPath = path.join(audioDir, "bgm.wav");
-  if (shouldIncludeResolveBgm && project.timeline.audioMix.bgmPath) {
-    await normalizeStereoAudio(
-      resolveFromProject(absoluteProjectPath, project.timeline.audioMix.bgmPath),
-      bgmPath,
-      log,
-    );
-  }
+  for (const cue of cues) {
+    const cueAudioPath = getConversationAudioPath(absoluteProjectPath, project, cue.index, cue.speaker);
+    if (!fs.existsSync(cueAudioPath)) {
+      throw new Error(`Cue audio was not found: ${cueAudioPath}`);
+    }
 
-  manifestItems.push({
-    durationFrames: project.timeline.durationFrames,
-    id: "audio-narration",
-    path: narrationPath,
-    recordFrame: 0,
-    trackIndex: 1,
-    trackType: "audio",
-  });
-  if (shouldIncludeResolveBgm && fs.existsSync(bgmPath)) {
+    const cueAudioOutputPath = path.join(
+      audioDir,
+      `${String(cue.index + 1).padStart(2, "0")}-${cue.speaker}.wav`,
+    );
+    await normalizeMonoAudio(cueAudioPath, cueAudioOutputPath, log);
     manifestItems.push({
-      durationFrames: project.timeline.durationFrames,
-      id: "audio-bgm",
-      path: bgmPath,
-      recordFrame: 0,
-      trackIndex: 2,
+      durationFrames: cue.durationFrames,
+      id: `audio-${String(cue.index + 1).padStart(2, "0")}-${cue.speaker}`,
+      path: cueAudioOutputPath,
+      recordFrame: cue.startFrame,
+      trackIndex: speakerTrackMap[cue.speaker].index,
       trackType: "audio",
     });
   }
@@ -588,8 +638,16 @@ export const exportProjectForResolve = async (
 
   const manifest: ResolveExportManifest = {
     audioTracks: [
-      {audioType: resolveExportAudioMode.narrationTrackType, index: 1, name: "Narration"},
-      ...(shouldIncludeResolveBgm ? [{audioType: "stereo", index: 2, name: "BGM"}] : []),
+      {
+        audioType: resolveExportAudioMode.narrationTrackType,
+        index: speakerTrackMap.zundamon.index,
+        name: speakerTrackMap.zundamon.name,
+      },
+      {
+        audioType: resolveExportAudioMode.narrationTrackType,
+        index: speakerTrackMap.metan.index,
+        name: speakerTrackMap.metan.name,
+      },
     ],
     exportDir,
     fps,
