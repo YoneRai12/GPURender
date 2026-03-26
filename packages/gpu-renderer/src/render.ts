@@ -190,9 +190,6 @@ const buildCharacterRuns = (
   cueIndex: number,
   cueStartFrame: number,
   sourceDurationFrames: number,
-  renderFrameCount: number,
-  sourceFps: number,
-  renderFps: number,
   mouthTimingByCue: string[][],
   blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
   activeSpeaker: SpeakerId,
@@ -200,15 +197,11 @@ const buildCharacterRuns = (
   const paths: string[] = [];
   const mouthFrames = mouthTimingByCue[cueIndex] ?? [];
 
-  for (let localFrame = 0; localFrame < renderFrameCount; localFrame += 1) {
-    const sourceLocalFrame = Math.min(
-      sourceDurationFrames - 1,
-      Math.floor((localFrame * sourceFps) / renderFps),
-    );
-    const absoluteFrame = cueStartFrame + sourceLocalFrame;
+  for (let localFrame = 0; localFrame < sourceDurationFrames; localFrame += 1) {
+    const absoluteFrame = cueStartFrame + localFrame;
     const blink = isBlinking(absoluteFrame, speaker, blinkWindowsBySpeaker);
     const mouth =
-      speaker === activeSpeaker ? mouthFrames[sourceLocalFrame] ?? "closed" : "closed";
+      speaker === activeSpeaker ? mouthFrames[localFrame] ?? "closed" : "closed";
     paths.push(getUpperBodyPath(projectPath, project, speaker, mouth, blink));
   }
 
@@ -318,9 +311,6 @@ const createAgiDiscussionSegment = async (
     cue.index,
     cue.startFrame,
     cue.durationFrames,
-    renderFrameCount,
-    sourceFps,
-    fps,
     mouthTimingByCue,
     blinkWindowsBySpeaker,
     cue.speaker,
@@ -332,16 +322,13 @@ const createAgiDiscussionSegment = async (
     cue.index,
     cue.startFrame,
     cue.durationFrames,
-    renderFrameCount,
-    sourceFps,
-    fps,
     mouthTimingByCue,
     blinkWindowsBySpeaker,
     cue.speaker,
   );
 
-  await writeConcatList(zRuns, fps, zListPath);
-  await writeConcatList(mRuns, fps, mListPath);
+  await writeConcatList(zRuns, sourceFps, zListPath);
+  await writeConcatList(mRuns, sourceFps, mListPath);
   await fsPromises.writeFile(subtitleTextPath, cue.subtitleText, "utf8");
 
   const primaryColor = getCharacterDefinition(project, cue.speaker).visual.accent;
@@ -354,8 +341,8 @@ const createAgiDiscussionSegment = async (
       : undefined;
   const compositeWidth = scaleValue(project.timeline.width);
   const compositeHeight = scaleValue(project.timeline.height);
-  const subtitleBandY = scaleValue(826);
-  const subtitleTextY = scaleValue(844);
+  const subtitleBandY = scaleValue(852);
+  const subtitleTextY = scaleValue(860);
   const zundamonStartAmplitude = previousCue?.speaker === "zundamon" ? 7 : 3;
   const zundamonTargetAmplitude = cue.speaker === "zundamon" ? 7 : 3;
   const zundamonEndAmplitude = nextCue?.speaker === "zundamon" ? 7 : 3;
@@ -405,8 +392,8 @@ const createAgiDiscussionSegment = async (
         `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
         `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
         `[3:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[subtitle]`,
-        `[4:v]fps=${fps},scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
-        `[5:v]fps=${fps},scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
+        `[4:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
+        `[5:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
         `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
@@ -418,8 +405,8 @@ const createAgiDiscussionSegment = async (
         `[0:v]${buildBackgroundFilter()}[bg]`,
         `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
         `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
-        `[3:v]fps=${fps},scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
-        `[4:v]fps=${fps},scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
+        `[3:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
+        `[4:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
         `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
         `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
         `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
