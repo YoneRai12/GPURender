@@ -350,7 +350,7 @@ const exportSubtitleClip = async (
       cue.subtitleAssetPath,
       "-filter_complex",
       [
-        "[0:v]format=rgba[base]",
+        "[0:v]format=rgba,colorchannelmixer=aa=0[base]",
         "[1:v]format=rgba[sub]",
         "[base][sub]overlay=0:852:shortest=1:eof_action=pass[v]",
       ].join(";"),
@@ -434,7 +434,7 @@ const exportCharacterClip = async (
       listPath,
       "-filter_complex",
       [
-        "[0:v]format=rgba[base]",
+        "[0:v]format=rgba,colorchannelmixer=aa=0[base]",
         charFilter,
         `[base][char]overlay=${dims.x}:${bobY}:shortest=1:eof_action=pass[v]`,
       ].join(";"),
@@ -459,9 +459,23 @@ const copyAudio = async (
   projectPath: string,
   project: TalkVideoProject,
   outputPath: string,
+  log: (message: string) => void,
 ) => {
   const audioPath = resolveFromProject(projectPath, project.timeline.audioMix.finalMixPath);
-  await fsPromises.copyFile(audioPath, outputPath);
+  await runFfmpeg(
+    [
+      "-i",
+      audioPath,
+      "-map",
+      "0:a:0",
+      "-ac",
+      "2",
+      "-c:a",
+      "pcm_s16le",
+      outputPath,
+    ],
+    log,
+  );
 };
 
 export const exportProjectForResolve = async (
@@ -497,7 +511,7 @@ export const exportProjectForResolve = async (
   const subtitleCuePaths: string[] = [];
 
   const audioPath = path.join(audioDir, "final-mix.wav");
-  await copyAudio(absoluteProjectPath, project, audioPath);
+  await copyAudio(absoluteProjectPath, project, audioPath, log);
 
   for (const cue of cues) {
     const suffix = String(cue.index + 1).padStart(2, "0");
@@ -557,7 +571,7 @@ export const exportProjectForResolve = async (
       id: "background-track",
       path: backgroundTrackPath,
       recordFrame: 0,
-      trackIndex: 1,
+      trackIndex: 4,
       trackType: "video",
     },
     {
@@ -565,7 +579,7 @@ export const exportProjectForResolve = async (
       id: "zundamon-track",
       path: zundamonTrackPath,
       recordFrame: 0,
-      trackIndex: 2,
+      trackIndex: 3,
       trackType: "video",
     },
     {
@@ -573,7 +587,7 @@ export const exportProjectForResolve = async (
       id: "metan-track",
       path: metanTrackPath,
       recordFrame: 0,
-      trackIndex: 3,
+      trackIndex: 2,
       trackType: "video",
     },
     {
@@ -581,7 +595,7 @@ export const exportProjectForResolve = async (
       id: "subtitle-track",
       path: subtitleTrackPath,
       recordFrame: 0,
-      trackIndex: 4,
+      trackIndex: 1,
       trackType: "video",
     },
     {
@@ -607,10 +621,10 @@ export const exportProjectForResolve = async (
     startTimecode: project.timeline.startTimecode ?? "01:00:00:00",
     timelineName: `${project.project.title} Timeline`,
     videoTracks: [
-      {index: 1, name: "Background"},
-      {index: 2, name: "Zundamon"},
-      {index: 3, name: "Metan"},
-      {index: 4, name: "Subtitle"},
+      {index: 1, name: "Subtitle"},
+      {index: 2, name: "Metan"},
+      {index: 3, name: "Zundamon"},
+      {index: 4, name: "Background"},
     ],
     width: project.timeline.width,
   };
