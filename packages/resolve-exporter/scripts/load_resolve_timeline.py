@@ -63,9 +63,33 @@ def _find_or_create_folder(media_pool, parent_folder, name):
     return created
 
 
-def _ensure_track_count(timeline, track_type, target_count):
+def _build_imported_by_path(folder, imported_items):
+    imported_by_path = {}
+
+    for item in imported_items or []:
+        clip_path = item.GetClipProperty("File Path")
+        if clip_path:
+            imported_by_path[os.path.normcase(os.path.abspath(clip_path))] = item
+
+    for item in folder.GetClipList() or []:
+        clip_path = item.GetClipProperty("File Path")
+        if clip_path:
+            imported_by_path[os.path.normcase(os.path.abspath(clip_path))] = item
+
+    return imported_by_path
+
+
+def _ensure_track_count(timeline, track_type, target_count, audio_tracks=None):
     while timeline.GetTrackCount(track_type) < target_count:
-        if not timeline.AddTrack(track_type):
+        index = timeline.GetTrackCount(track_type) + 1
+        if track_type == "audio":
+            audio_type = "stereo"
+            if audio_tracks and len(audio_tracks) >= index:
+                audio_type = audio_tracks[index - 1].get("audioType", "stereo")
+            ok = timeline.AddTrack(track_type, {"audioType": audio_type, "index": index})
+        else:
+            ok = timeline.AddTrack(track_type, {"index": index})
+        if not ok:
             raise RuntimeError(f"Unable to add {track_type} track {target_count}")
 
 
@@ -122,6 +146,50 @@ def _timecode_to_frame_count(timecode, fps):
     return (((hours * 60) + minutes) * 60 + seconds) * int(fps) + frames
 
 
+def _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, items):
+    created_items = []
+    for item in items:
+        source_path = os.path.normcase(os.path.abspath(item["path"]))
+        media_pool_item = imported_by_path.get(source_path)
+        if not media_pool_item:
+            raise RuntimeError(f"Imported media item not found for path: {item['path']}")
+
+        clip_info = {
+            "mediaPoolItem": media_pool_item,
+            "startFrame": 0,
+            "endFrame": max(0, int(item["durationFrames"]) - 1),
+            "recordFrame": timeline_start_frame + int(item["recordFrame"]),
+            "trackIndex": int(item["trackIndex"]),
+            "mediaType": 2 if item["trackType"] == "audio" else 1,
+        }
+        appended = media_pool.AppendToTimeline([clip_info])
+        if not appended:
+            raise RuntimeError(f"Unable to append item to timeline: {item['id']}")
+        created_items.extend(appended)
+    return created_items
+
+
+def _create_subtitles(resolve, timeline, subtitle_config):
+    if not subtitle_config:
+        return {"created": False}
+
+    before_count = timeline.GetTrackCount("subtitle")
+    settings = {
+        resolve.SUBTITLE_LANGUAGE: resolve.AUTO_CAPTION_AUTO,
+        resolve.SUBTITLE_CAPTION_PRESET: resolve.AUTO_CAPTION_SUBTITLE_DEFAULT,
+        resolve.SUBTITLE_CHARS_PER_LINE: int(subtitle_config.get("charsPerLine", 24)),
+        resolve.SUBTITLE_LINE_BREAK: resolve.AUTO_CAPTION_LINE_DOUBLE
+        if subtitle_config.get("lineBreak") == "double"
+        else resolve.AUTO_CAPTION_LINE_SINGLE,
+        resolve.SUBTITLE_GAP: 0,
+    }
+    ok = timeline.CreateSubtitlesFromAudio(settings)
+    after_count = timeline.GetTrackCount("subtitle")
+    if ok and after_count > 0:
+        timeline.SetTrackName("subtitle", after_count, subtitle_config.get("trackName", "Subtitle"))
+    return {"created": bool(ok), "subtitleTrackCount": after_count, "subtitleTrackCountBefore": before_count}
+
+
 def main():
     request = _load_request_payload()
     manifest_path = request["manifestPath"]
@@ -147,13 +215,17 @@ def main():
 
     import_paths = _dedupe_paths(manifest["items"])
     imported_items = media_pool.ImportMedia(import_paths)
-    if not imported_items or len(imported_items) != len(import_paths):
-        raise RuntimeError("Resolve did not import every expected media item.")
-
-    imported_by_path = {
-        os.path.normcase(os.path.abspath(import_path)): media_pool_item
-        for import_path, media_pool_item in zip(import_paths, imported_items)
-    }
+    imported_by_path = _build_imported_by_path(target_folder, imported_items)
+    missing_paths = [
+        import_path
+        for import_path in import_paths
+        if os.path.normcase(os.path.abspath(import_path)) not in imported_by_path
+    ]
+    if missing_paths:
+        raise RuntimeError(
+            "Resolve did not expose expected media items after import: "
+            + ", ".join(missing_paths[:5])
+        )
 
     timeline_name = manifest["timelineName"]
     timeline = media_pool.CreateEmptyTimeline(timeline_name)
@@ -167,29 +239,30 @@ def main():
     timeline_start_frame = _timecode_to_frame_count(manifest["startTimecode"], manifest["fps"])
 
     _ensure_track_count(timeline, "video", len(manifest["videoTracks"]))
-    _ensure_track_count(timeline, "audio", len(manifest["audioTracks"]))
+    _ensure_track_count(timeline, "audio", len(manifest["audioTracks"]), manifest["audioTracks"])
 
     for track in manifest["videoTracks"]:
         timeline.SetTrackName("video", track["index"], track["name"])
     for track in manifest["audioTracks"]:
         timeline.SetTrackName("audio", track["index"], track["name"])
 
-    for item in manifest["items"]:
-        source_path = os.path.normcase(os.path.abspath(item["path"]))
-        media_pool_item = imported_by_path.get(source_path)
-        if not media_pool_item:
-            raise RuntimeError(f"Imported media item not found for path: {item['path']}")
+    video_items = [item for item in manifest["items"] if item["trackType"] == "video"]
+    narration_items = [
+        item
+        for item in manifest["items"]
+        if item["trackType"] == "audio" and item["trackIndex"] == manifest["subtitle"]["sourceAudioTrackIndex"]
+    ] if manifest.get("subtitle") else [item for item in manifest["items"] if item["trackType"] == "audio"]
+    other_audio_items = [
+        item
+        for item in manifest["items"]
+        if item["trackType"] == "audio"
+        and (not manifest.get("subtitle") or item["trackIndex"] != manifest["subtitle"]["sourceAudioTrackIndex"])
+    ]
 
-        clip_info = {
-            "mediaPoolItem": media_pool_item,
-            "startFrame": 0,
-            "endFrame": max(0, int(item["durationFrames"]) - 1),
-            "recordFrame": timeline_start_frame + int(item["recordFrame"]),
-            "trackIndex": int(item["trackIndex"]),
-            "mediaType": 2 if item["trackType"] == "audio" else 1,
-        }
-        if not media_pool.AppendToTimeline([clip_info]):
-            raise RuntimeError(f"Unable to append item to timeline: {item['id']}")
+    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(video_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
+    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(narration_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
+    subtitle_result = _create_subtitles(resolve, timeline, manifest.get("subtitle"))
+    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(other_audio_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
 
     project_manager.SaveProject()
     resolve.OpenPage("edit")
@@ -200,6 +273,7 @@ def main():
             "manifestPath": manifest_path,
             "ok": True,
             "projectName": project.GetName(),
+            "subtitle": subtitle_result,
             "timelineName": timeline.GetName(),
             "timelineStartFrame": timeline_start_frame,
         },
