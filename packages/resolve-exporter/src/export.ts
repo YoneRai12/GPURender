@@ -24,16 +24,22 @@ const resolveUserScriptsUtilityDir = path.join(
 const menuLoaderFileName = "GPURender_LoadTimeline.py";
 const menuRequestFileName = "GPURender_LoadTimeline.request.json";
 
-const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
-const metanDims = {height: 424, width: 364, x: 1642, y: 530};
+const zundamonLayout = {flipX: true, targetHeight: 424, targetWidth: 348, targetX: -66, targetY: 530};
+const metanLayout = {flipX: false, targetHeight: 424, targetWidth: 364, targetX: 1642, targetY: 530};
+const cardLayout = {targetX: 255, targetY: 138};
+const topLayout = {targetX: 0, targetY: 0};
 
 type SubtitleMode = "auto-from-audio";
 type SubtitleLineBreak = "single" | "double";
+type ResolveTimelinePropertyValue = boolean | number | string;
+
+export type ResolveTimelineProperties = Record<string, ResolveTimelinePropertyValue>;
 
 export type ResolveManifestItem = {
   durationFrames: number;
   id: string;
   path: string;
+  properties?: ResolveTimelineProperties;
   recordFrame: number;
   trackIndex: number;
   trackType: "audio" | "video";
@@ -83,12 +89,48 @@ type ExportOptions = {
   log?: (message: string) => void;
 };
 
+type ImageDimensions = {
+  height: number;
+  width: number;
+};
+
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
   log(`ffmpeg ${args.join(" ")}`);
   await execFileAsync("ffmpeg", ["-y", ...args], {
     windowsHide: true,
     maxBuffer: 1024 * 1024 * 16,
   });
+};
+
+const readImageDimensions = async (filePath: string, log: (message: string) => void) => {
+  log(`ffprobe ${filePath}`);
+  const {stdout} = await execFileAsync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ],
+    {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  const parsed = JSON.parse(stdout) as {streams?: Array<{height?: number; width?: number}>};
+  const stream = parsed.streams?.[0];
+  if (!stream?.width || !stream.height) {
+    throw new Error(`Could not read image dimensions for ${filePath}`);
+  }
+  return {
+    height: stream.height,
+    width: stream.width,
+  } satisfies ImageDimensions;
 };
 
 const formatTimecode = (frame: number, fps: number) => {
@@ -145,43 +187,20 @@ const getClosedUpperBodyPath = (
   return path.join(upperDir, `${expression}-closed.png`);
 };
 
-const exportBackgroundStill = async (
-  cue: CueRuntime,
-  outputPath: string,
-  log: (message: string) => void,
-) => {
-  if (!cue.topAssetPath || !cue.cardAssetPath) {
-    throw new Error(`Cue ${cue.index + 1} is missing background assets.`);
-  }
+const copyAsset = async (sourcePath: string, outputPath: string) => {
+  await fsPromises.mkdir(path.dirname(outputPath), {recursive: true});
+  await fsPromises.copyFile(sourcePath, outputPath);
+};
 
+const exportBackgroundBaseStill = async (outputPath: string, log: (message: string) => void) => {
   await runFfmpeg(
     [
       "-f",
       "lavfi",
       "-i",
       "color=c=0x9eb7f2:s=1920x1080:r=1:d=1",
-      "-loop",
-      "1",
-      "-t",
-      "1",
-      "-i",
-      cue.topAssetPath,
-      "-loop",
-      "1",
-      "-t",
-      "1",
-      "-i",
-      cue.cardAssetPath,
-      "-filter_complex",
-      [
-        `[0:v]${buildBackgroundFilter()}[bg]`,
-        "[1:v]format=rgba[top]",
-        "[2:v]format=rgba[card]",
-        "[bg][top]overlay=0:0:shortest=1:eof_action=pass[b1]",
-        "[b1][card]overlay=255:138:shortest=1:eof_action=pass[v]",
-      ].join(";"),
-      "-map",
-      "[v]",
+      "-vf",
+      buildBackgroundFilter(),
       "-frames:v",
       "1",
       "-pix_fmt",
@@ -192,51 +211,60 @@ const exportBackgroundStill = async (
   );
 };
 
-const exportCharacterStill = async (
-  projectPath: string,
-  project: TalkVideoProject,
-  speaker: SpeakerId,
+const roundProperty = (value: number) => Number(value.toFixed(6));
+
+const createPlacedStillProperties = ({
+  flipX = false,
+  frameHeight,
+  frameWidth,
+  sourceHeight,
+  sourceWidth,
+  targetHeight,
+  targetWidth,
+  targetX,
+  targetY,
+}: {
+  flipX?: boolean;
+  frameHeight: number;
+  frameWidth: number;
+  sourceHeight: number;
+  sourceWidth: number;
+  targetHeight: number;
+  targetWidth: number;
+  targetX: number;
+  targetY: number;
+}): ResolveTimelineProperties => ({
+  FlipX: flipX,
+  Pan: roundProperty(targetX + targetWidth / 2 - frameWidth / 2),
+  Tilt: roundProperty(targetY + targetHeight / 2 - frameHeight / 2),
+  ZoomX: roundProperty(targetWidth / sourceWidth),
+  ZoomY: roundProperty(targetHeight / sourceHeight),
+});
+
+const normalizeNarrationAudio = async (
+  inputPath: string,
   outputPath: string,
   log: (message: string) => void,
 ) => {
-  const dims = speaker === "zundamon" ? zundamonDims : metanDims;
-  const upperPath = getClosedUpperBodyPath(projectPath, project, speaker);
-  const speakerFilter =
-    speaker === "zundamon"
-      ? `[1:v]scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba,hflip[char]`
-      : `[1:v]scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba[char]`;
-
   await runFfmpeg(
     [
-      "-f",
-      "lavfi",
       "-i",
-      "color=c=black@0.0:s=1920x1080:r=1:d=1",
-      "-loop",
-      "1",
-      "-t",
-      "1",
-      "-i",
-      upperPath,
-      "-filter_complex",
-      [
-        "[0:v]format=rgba,colorchannelmixer=aa=0[base]",
-        speakerFilter,
-        `[base][char]overlay=${dims.x}:${dims.y}:shortest=1:eof_action=pass[v]`,
-      ].join(";"),
+      inputPath,
       "-map",
-      "[v]",
-      "-frames:v",
-      "1",
-      "-pix_fmt",
-      "rgba",
+      "0:a:0",
+      "-ar",
+      "48000",
+      "-af",
+      "pan=stereo|c0=c0|c1=c0",
+      "-c:a",
+      "pcm_s16le",
       outputPath,
     ],
     log,
   );
 };
 
-const normalizeAudio = async (
+const normalizeStereoAudio = async (
   inputPath: string,
   outputPath: string,
   log: (message: string) => void,
@@ -268,12 +296,17 @@ export const exportProjectForResolve = async (
   const absoluteProjectPath = path.resolve(projectPath);
   const exportDir = resolveFromProject(absoluteProjectPath, project.renderTargets.resolve.exportDir);
   await fsPromises.rm(exportDir, {force: true, recursive: true});
+
   const backgroundsDir = path.join(exportDir, "media", "backgrounds");
+  const topDir = path.join(exportDir, "media", "top");
+  const cardsDir = path.join(exportDir, "media", "cards");
   const charactersDir = path.join(exportDir, "media", "characters");
   const audioDir = path.join(exportDir, "media", "audio");
   const subtitlesDir = path.join(exportDir, "subtitles");
 
   await fsPromises.mkdir(backgroundsDir, {recursive: true});
+  await fsPromises.mkdir(topDir, {recursive: true});
+  await fsPromises.mkdir(cardsDir, {recursive: true});
   await fsPromises.mkdir(charactersDir, {recursive: true});
   await fsPromises.mkdir(audioDir, {recursive: true});
   await fsPromises.mkdir(subtitlesDir, {recursive: true});
@@ -282,37 +315,117 @@ export const exportProjectForResolve = async (
   const manifestItems: ResolveManifestItem[] = [];
   const fps = project.timeline.fps;
 
-  const zundamonStillPath = path.join(charactersDir, "zundamon.png");
-  const metanStillPath = path.join(charactersDir, "metan.png");
-  await exportCharacterStill(absoluteProjectPath, project, "zundamon", zundamonStillPath, log);
-  await exportCharacterStill(absoluteProjectPath, project, "metan", metanStillPath, log);
+  const backgroundBasePath = path.join(backgroundsDir, "background-base.png");
+  await exportBackgroundBaseStill(backgroundBasePath, log);
+  manifestItems.push({
+    durationFrames: project.timeline.durationFrames,
+    id: "background-base",
+    path: backgroundBasePath,
+    recordFrame: 0,
+    trackIndex: 1,
+    trackType: "video",
+  });
+
+  const zundamonUpperPath = getClosedUpperBodyPath(absoluteProjectPath, project, "zundamon");
+  const metanUpperPath = getClosedUpperBodyPath(absoluteProjectPath, project, "metan");
+  const zundamonStillPath = path.join(charactersDir, "zundamon-upper.png");
+  const metanStillPath = path.join(charactersDir, "metan-upper.png");
+  await copyAsset(zundamonUpperPath, zundamonStillPath);
+  await copyAsset(metanUpperPath, metanStillPath);
+
+  const zundamonSize = await readImageDimensions(zundamonStillPath, log);
+  const metanSize = await readImageDimensions(metanStillPath, log);
+
+  manifestItems.push(
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "zundamon-full",
+      path: zundamonStillPath,
+      properties: createPlacedStillProperties({
+        flipX: zundamonLayout.flipX,
+        frameHeight: project.timeline.height,
+        frameWidth: project.timeline.width,
+        sourceHeight: zundamonSize.height,
+        sourceWidth: zundamonSize.width,
+        targetHeight: zundamonLayout.targetHeight,
+        targetWidth: zundamonLayout.targetWidth,
+        targetX: zundamonLayout.targetX,
+        targetY: zundamonLayout.targetY,
+      }),
+      recordFrame: 0,
+      trackIndex: 4,
+      trackType: "video",
+    },
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "metan-full",
+      path: metanStillPath,
+      properties: createPlacedStillProperties({
+        flipX: metanLayout.flipX,
+        frameHeight: project.timeline.height,
+        frameWidth: project.timeline.width,
+        sourceHeight: metanSize.height,
+        sourceWidth: metanSize.width,
+        targetHeight: metanLayout.targetHeight,
+        targetWidth: metanLayout.targetWidth,
+        targetX: metanLayout.targetX,
+        targetY: metanLayout.targetY,
+      }),
+      recordFrame: 0,
+      trackIndex: 5,
+      trackType: "video",
+    },
+  );
 
   for (const cue of cues) {
+    if (!cue.topAssetPath || !cue.cardAssetPath) {
+      throw new Error(`Cue ${cue.index + 1} is missing top/card assets.`);
+    }
+
     const suffix = String(cue.index + 1).padStart(2, "0");
-    const backgroundPath = path.join(backgroundsDir, `cue-${suffix}.png`);
-    await exportBackgroundStill(cue, backgroundPath, log);
+    const topCueDir = path.join(topDir, `cue-${suffix}`);
+    const cardCueDir = path.join(cardsDir, `cue-${suffix}`);
+    const topPath = path.join(topCueDir, "top.png");
+    const cardPath = path.join(cardCueDir, "card.png");
+    await copyAsset(cue.topAssetPath, topPath);
+    await copyAsset(cue.cardAssetPath, cardPath);
+
+    const topSize = await readImageDimensions(topPath, log);
+    const cardSize = await readImageDimensions(cardPath, log);
 
     manifestItems.push(
       {
         durationFrames: cue.durationFrames,
-        id: `background-${suffix}`,
-        path: backgroundPath,
-        recordFrame: cue.startFrame,
-        trackIndex: 1,
-        trackType: "video",
-      },
-      {
-        durationFrames: cue.durationFrames,
-        id: `zundamon-${suffix}`,
-        path: zundamonStillPath,
+        id: `top-${suffix}`,
+        path: topPath,
+        properties: createPlacedStillProperties({
+          frameHeight: project.timeline.height,
+          frameWidth: project.timeline.width,
+          sourceHeight: topSize.height,
+          sourceWidth: topSize.width,
+          targetHeight: topSize.height,
+          targetWidth: topSize.width,
+          targetX: topLayout.targetX,
+          targetY: topLayout.targetY,
+        }),
         recordFrame: cue.startFrame,
         trackIndex: 2,
         trackType: "video",
       },
       {
         durationFrames: cue.durationFrames,
-        id: `metan-${suffix}`,
-        path: metanStillPath,
+        id: `card-${suffix}`,
+        path: cardPath,
+        properties: createPlacedStillProperties({
+          frameHeight: project.timeline.height,
+          frameWidth: project.timeline.width,
+          sourceHeight: cardSize.height,
+          sourceWidth: cardSize.width,
+          targetHeight: cardSize.height,
+          targetWidth: cardSize.width,
+          targetX: cardLayout.targetX,
+          targetY: cardLayout.targetY,
+        }),
         recordFrame: cue.startFrame,
         trackIndex: 3,
         trackType: "video",
@@ -322,13 +435,13 @@ export const exportProjectForResolve = async (
 
   const narrationPath = path.join(audioDir, "narration.wav");
   const bgmPath = path.join(audioDir, "bgm.wav");
-  await normalizeAudio(
+  await normalizeNarrationAudio(
     resolveFromProject(absoluteProjectPath, project.timeline.audioMix.combinedNarrationPath),
     narrationPath,
     log,
   );
   if (project.timeline.audioMix.bgmPath) {
-    await normalizeAudio(
+    await normalizeStereoAudio(
       resolveFromProject(absoluteProjectPath, project.timeline.audioMix.bgmPath),
       bgmPath,
       log,
@@ -381,9 +494,11 @@ export const exportProjectForResolve = async (
     },
     timelineName: `${project.project.title} Timeline`,
     videoTracks: [
-      {index: 1, name: "Background"},
-      {index: 2, name: "Zundamon"},
-      {index: 3, name: "Metan"},
+      {index: 1, name: "BackgroundBase"},
+      {index: 2, name: "TopUI"},
+      {index: 3, name: "Card"},
+      {index: 4, name: "Zundamon"},
+      {index: 5, name: "Metan"},
     ],
     width: project.timeline.width,
   };
