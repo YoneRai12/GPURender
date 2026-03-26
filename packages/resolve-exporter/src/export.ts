@@ -129,6 +129,8 @@ const concatLayerFiles = async (
   filePaths: string[],
   outputPath: string,
   tempDir: string,
+  fps: number,
+  mode: "background" | "alpha",
   log: (message: string) => void,
 ) => {
   if (filePaths.length === 0) {
@@ -142,17 +144,49 @@ const concatLayerFiles = async (
   await writeMediaConcatList(filePaths, listPath);
 
   await runFfmpeg(
-    [
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      listPath,
-      "-c",
-      "copy",
-      outputPath,
-    ],
+    mode === "background"
+      ? [
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          listPath,
+          "-map",
+          "0:v:0",
+          "-r",
+          `${fps}`,
+          "-an",
+          "-c:v",
+          "h264_nvenc",
+          "-preset",
+          "p5",
+          "-cq",
+          "18",
+          "-pix_fmt",
+          "yuv420p",
+          outputPath,
+        ]
+      : [
+          "-f",
+          "concat",
+          "-safe",
+          "0",
+          "-i",
+          listPath,
+          "-map",
+          "0:v:0",
+          "-r",
+          `${fps}`,
+          "-an",
+          "-c:v",
+          "prores_ks",
+          "-profile:v",
+          "4",
+          "-pix_fmt",
+          "yuva444p10le",
+          outputPath,
+        ],
     log,
   );
 };
@@ -468,6 +502,8 @@ const copyAudio = async (
       audioPath,
       "-map",
       "0:a:0",
+      "-ar",
+      "48000",
       "-ac",
       "2",
       "-c:a",
@@ -560,10 +596,38 @@ export const exportProjectForResolve = async (
   const metanTrackPath = path.join(tracksDir, "metan.mov");
   const subtitleTrackPath = path.join(tracksDir, "subtitle.mov");
 
-  await concatLayerFiles(backgroundCuePaths, backgroundTrackPath, tempDir, log);
-  await concatLayerFiles(zundamonCuePaths, zundamonTrackPath, tempDir, log);
-  await concatLayerFiles(metanCuePaths, metanTrackPath, tempDir, log);
-  await concatLayerFiles(subtitleCuePaths, subtitleTrackPath, tempDir, log);
+  await concatLayerFiles(
+    backgroundCuePaths,
+    backgroundTrackPath,
+    tempDir,
+    project.timeline.fps,
+    "background",
+    log,
+  );
+  await concatLayerFiles(
+    zundamonCuePaths,
+    zundamonTrackPath,
+    tempDir,
+    project.timeline.fps,
+    "alpha",
+    log,
+  );
+  await concatLayerFiles(
+    metanCuePaths,
+    metanTrackPath,
+    tempDir,
+    project.timeline.fps,
+    "alpha",
+    log,
+  );
+  await concatLayerFiles(
+    subtitleCuePaths,
+    subtitleTrackPath,
+    tempDir,
+    project.timeline.fps,
+    "alpha",
+    log,
+  );
 
   manifestItems.push(
     {
