@@ -42,20 +42,58 @@ const metanDims = {height: 424, width: 364, x: 1642, y: 530};
 
 const scaleValue = (value: number) => Math.round(value * supersampleScale);
 
+const buildAmplitudeExpression = (
+  startAmplitude: number,
+  targetAmplitude: number,
+  endAmplitude: number,
+  renderFrameCount: number,
+) => {
+  const scaledStart = startAmplitude * supersampleScale;
+  const scaledTarget = targetAmplitude * supersampleScale;
+  const scaledEnd = endAmplitude * supersampleScale;
+  const easingFrames = Math.max(2, Math.min(10, Math.floor(renderFrameCount / 6)));
+  const easeOutStart = Math.max(easingFrames, renderFrameCount - easingFrames);
+
+  if (
+    easingFrames <= 0 ||
+    (scaledStart === scaledTarget && scaledTarget === scaledEnd)
+  ) {
+    return `${scaledTarget}`;
+  }
+
+  const startExpr =
+    scaledStart === scaledTarget
+      ? `${scaledTarget}`
+      : `${scaledStart}+(${scaledTarget - scaledStart})*(n/${easingFrames})`;
+  const endExpr =
+    scaledEnd === scaledTarget
+      ? `${scaledTarget}`
+      : `${scaledTarget}+(${scaledEnd - scaledTarget})*((n-${easeOutStart})/${easingFrames})`;
+
+  return `if(lt(n\\,${easingFrames})\\,${startExpr}\\,if(gte(n\\,${easeOutStart})\\,${endExpr}\\,${scaledTarget}))`;
+};
+
 const buildBobYExpression = (
   baseY: number,
-  active: boolean,
   cueStartFrame: number,
   sourceFps: number,
   renderFps: number,
   radiansDivisor: number,
+  startAmplitude: number,
+  targetAmplitude: number,
+  endAmplitude: number,
+  renderFrameCount: number,
 ) => {
   const midpoint = 1;
-  const amplitude = active ? 7 : 3;
   const sourceFramesPerRenderFrame = sourceFps / renderFps;
   const scaledBaseY = scaleValue(baseY + midpoint);
-  const scaledAmplitude = amplitude * supersampleScale;
-  return `${scaledBaseY}+${scaledAmplitude}*sin((${cueStartFrame}+n*${sourceFramesPerRenderFrame.toFixed(
+  const amplitudeExpr = buildAmplitudeExpression(
+    startAmplitude,
+    targetAmplitude,
+    endAmplitude,
+    renderFrameCount,
+  );
+  return `${scaledBaseY}+(${amplitudeExpr})*sin((${cueStartFrame}+n*${sourceFramesPerRenderFrame.toFixed(
     6,
   )})/${radiansDivisor})`;
 };
@@ -254,6 +292,8 @@ const createAgiDiscussionSegment = async (
   projectPath: string,
   project: TalkVideoProject,
   cue: ReturnType<typeof loadCueRuntime>["cues"][number],
+  previousCue: ReturnType<typeof loadCueRuntime>["cues"][number] | undefined,
+  nextCue: ReturnType<typeof loadCueRuntime>["cues"][number] | undefined,
   mouthTimingByCue: string[][],
   blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
   tempRoot: string,
@@ -315,21 +355,33 @@ const createAgiDiscussionSegment = async (
   const compositeWidth = scaleValue(project.timeline.width);
   const compositeHeight = scaleValue(project.timeline.height);
   const subtitleBandY = scaleValue(852);
+  const zundamonStartAmplitude = previousCue?.speaker === "zundamon" ? 7 : 3;
+  const zundamonTargetAmplitude = cue.speaker === "zundamon" ? 7 : 3;
+  const zundamonEndAmplitude = nextCue?.speaker === "zundamon" ? 7 : 3;
+  const metanStartAmplitude = previousCue?.speaker === "metan" ? 7 : 3;
+  const metanTargetAmplitude = cue.speaker === "metan" ? 7 : 3;
+  const metanEndAmplitude = nextCue?.speaker === "metan" ? 7 : 3;
   const zundamonBobY = buildBobYExpression(
     zundamonDims.y,
-    cue.speaker === "zundamon",
     cue.startFrame,
     sourceFps,
     fps,
     28,
+    zundamonStartAmplitude,
+    zundamonTargetAmplitude,
+    zundamonEndAmplitude,
+    renderFrameCount,
   );
   const metanBobY = buildBobYExpression(
     metanDims.y,
-    cue.speaker === "metan",
     cue.startFrame,
     sourceFps,
     fps,
     31,
+    metanStartAmplitude,
+    metanTargetAmplitude,
+    metanEndAmplitude,
+    renderFrameCount,
   );
 
   if (!topPath || !cardPath) {
@@ -504,6 +556,8 @@ export const renderProjectGpuDemo = async (
       projectPath,
       project,
       cue,
+      cues[cue.index - 1],
+      cues[cue.index + 1],
       mouthTimingByCue,
       blinkWindowsBySpeaker,
       tempRoot,
