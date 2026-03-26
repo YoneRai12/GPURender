@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import time
 import traceback
 
 
@@ -79,6 +80,28 @@ def _build_imported_by_path(folder, imported_items):
     return imported_by_path
 
 
+def _collect_missing_paths(import_paths, imported_by_path):
+    return [
+        import_path
+        for import_path in import_paths
+        if os.path.normcase(os.path.abspath(import_path)) not in imported_by_path
+    ]
+
+
+def _apply_timeline_item_properties(timeline_items, item_definition):
+    properties = item_definition.get("properties") or {}
+    if not properties:
+        return
+
+    for timeline_item in timeline_items or []:
+        for property_key, property_value in properties.items():
+            ok = timeline_item.SetProperty(property_key, property_value)
+            if not ok:
+                raise RuntimeError(
+                    f"Unable to set timeline property {property_key} for item: {item_definition['id']}"
+                )
+
+
 def _ensure_track_count(timeline, track_type, target_count, audio_tracks=None):
     while timeline.GetTrackCount(track_type) < target_count:
         index = timeline.GetTrackCount(track_type) + 1
@@ -109,7 +132,7 @@ def _load_request_payload():
             "Manifest path was not provided and no request file was found next to the loader script."
         )
 
-    with open(request_path, "r", encoding="utf-8") as handle:
+    with open(request_path, "r", encoding="utf-8-sig") as handle:
         payload = json.load(handle)
 
     manifest_path = os.path.abspath(payload["manifestPath"])
@@ -165,13 +188,92 @@ def _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, i
         appended = media_pool.AppendToTimeline([clip_info])
         if not appended:
             raise RuntimeError(f"Unable to append item to timeline: {item['id']}")
+        _apply_timeline_item_properties(appended, item)
         created_items.extend(appended)
     return created_items
 
 
-def _create_subtitles(resolve, timeline, subtitle_config):
+def _append_subtitle_srt(media_pool, target_folder, timeline, timeline_start_frame, manifest, subtitle_config):
+    srt_path = os.path.abspath(subtitle_config.get("srtPath") or "")
+    if not srt_path:
+        return {"created": False, "reason": "subtitle-srt-path-missing"}
+
+    if not os.path.exists(srt_path):
+        return {"created": False, "reason": "subtitle-srt-not-found", "srtPath": srt_path}
+
+    if timeline.GetTrackCount("subtitle") < 1:
+        ok = timeline.AddTrack("subtitle", {"index": 1})
+        if not ok:
+            return {"created": False, "reason": "add-subtitle-track-failed", "srtPath": srt_path}
+
+    before_count = len(timeline.GetItemListInTrack("subtitle", 1) or [])
+    timeline.SetCurrentTimecode(manifest["startTimecode"])
+
+    imported_items = media_pool.ImportMedia([srt_path]) or []
+    imported_by_path = _build_imported_by_path(target_folder, imported_items)
+    media_pool_item = imported_by_path.get(os.path.normcase(srt_path))
+    if not media_pool_item:
+        return {
+            "created": False,
+            "reason": "subtitle-srt-not-imported-as-media",
+            "importedCount": len(imported_items),
+            "srtPath": srt_path,
+        }
+
+    appended = media_pool.AppendToTimeline([media_pool_item]) or []
+    if not appended:
+        return {"created": False, "reason": "subtitle-append-failed", "srtPath": srt_path}
+
+    track_locations = []
+    subtitle_items = []
+    for timeline_item in appended:
+        track_type, track_index = timeline_item.GetTrackTypeAndIndex()
+        track_locations.append({"trackIndex": track_index, "trackType": track_type})
+        if track_type == "subtitle":
+            subtitle_items.append(timeline_item)
+
+    if not subtitle_items:
+        timeline.DeleteClips(appended, False)
+        return {
+            "created": False,
+            "reason": "subtitle-appended-to-non-subtitle-track",
+            "locations": track_locations,
+            "srtPath": srt_path,
+        }
+
+    after_count = len(timeline.GetItemListInTrack("subtitle", 1) or [])
+    timeline.SetTrackName("subtitle", 1, subtitle_config.get("trackName", "Subtitle"))
+    timeline.SetCurrentTimecode(manifest["startTimecode"])
+    return {
+        "afterItemCount": after_count,
+        "created": after_count > before_count,
+        "importedCount": len(imported_items),
+        "locations": track_locations,
+        "method": "import-srt",
+        "srtPath": srt_path,
+    }
+
+
+def _create_subtitles(resolve, media_pool, target_folder, timeline, manifest):
+    subtitle_config = manifest.get("subtitle")
     if not subtitle_config:
         return {"created": False}
+
+    srt_result = _append_subtitle_srt(
+        media_pool,
+        target_folder,
+        timeline,
+        _timecode_to_frame_count(manifest["startTimecode"], manifest["fps"]),
+        manifest,
+        subtitle_config,
+    )
+    if srt_result.get("created"):
+        return srt_result
+
+    product_name = str(resolve.GetProductName() or "")
+    if "Studio" not in product_name:
+        srt_result["studioFallback"] = "unavailable-in-resolve-free"
+        return srt_result
 
     before_count = timeline.GetTrackCount("subtitle")
     settings = {
@@ -187,7 +289,13 @@ def _create_subtitles(resolve, timeline, subtitle_config):
     after_count = timeline.GetTrackCount("subtitle")
     if ok and after_count > 0:
         timeline.SetTrackName("subtitle", after_count, subtitle_config.get("trackName", "Subtitle"))
-    return {"created": bool(ok), "subtitleTrackCount": after_count, "subtitleTrackCountBefore": before_count}
+    return {
+        "created": bool(ok),
+        "method": "auto-from-audio",
+        "srtAttempt": srt_result,
+        "subtitleTrackCount": after_count,
+        "subtitleTrackCountBefore": before_count,
+    }
 
 
 def main():
@@ -215,12 +323,16 @@ def main():
 
     import_paths = _dedupe_paths(manifest["items"])
     imported_items = media_pool.ImportMedia(import_paths)
-    imported_by_path = _build_imported_by_path(target_folder, imported_items)
-    missing_paths = [
-        import_path
-        for import_path in import_paths
-        if os.path.normcase(os.path.abspath(import_path)) not in imported_by_path
-    ]
+    imported_by_path = {}
+    missing_paths = import_paths
+
+    for _ in range(10):
+        imported_by_path = _build_imported_by_path(target_folder, imported_items)
+        missing_paths = _collect_missing_paths(import_paths, imported_by_path)
+        if not missing_paths:
+            break
+        time.sleep(0.5)
+
     if missing_paths:
         raise RuntimeError(
             "Resolve did not expose expected media items after import: "
@@ -230,7 +342,8 @@ def main():
     timeline_name = manifest["timelineName"]
     timeline = media_pool.CreateEmptyTimeline(timeline_name)
     if not timeline:
-        timeline = media_pool.CreateEmptyTimeline(f"{timeline_name} {manifest['generatedAt'][:19]}")
+        fallback_name = f"{timeline_name} {time.strftime('%Y-%m-%dT%H-%M-%S')}"
+        timeline = media_pool.CreateEmptyTimeline(fallback_name)
     if not timeline:
         raise RuntimeError(f"Unable to create timeline: {timeline_name}")
 
@@ -261,11 +374,13 @@ def main():
 
     _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(video_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
     _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(narration_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
-    subtitle_result = _create_subtitles(resolve, timeline, manifest.get("subtitle"))
     _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(other_audio_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
+    subtitle_result = _create_subtitles(resolve, media_pool, target_folder, timeline, manifest)
+    timeline.SetCurrentTimecode(manifest["startTimecode"])
 
     project_manager.SaveProject()
     resolve.OpenPage("edit")
+    timeline.SetCurrentTimecode(manifest["startTimecode"])
     message = f"Resolve timeline loaded: {timeline.GetName()}"
     _write_result(
         request["resultPath"],
@@ -298,6 +413,7 @@ if __name__ == "__main__":
             result_path,
             {
                 "error": str(exc),
+                "manifestPath": request.get("manifestPath") if "request" in locals() else None,
                 "ok": False,
                 "traceback": traceback.format_exc(),
             },
