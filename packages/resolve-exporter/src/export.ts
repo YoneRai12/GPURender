@@ -5,11 +5,7 @@ import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 
-import {
-  createBlinkWindowsBySpeaker,
-  loadCueRuntime,
-  type CueRuntime,
-} from "@gpu-render/gpu-renderer";
+import {loadCueRuntime, type CueRuntime} from "@gpu-render/gpu-renderer";
 import {resolveFromProject, type SpeakerId, type TalkVideoProject} from "@gpu-render/shared";
 
 const execFileAsync = promisify(execFile);
@@ -31,10 +27,8 @@ const menuRequestFileName = "GPURender_LoadTimeline.request.json";
 const zundamonDims = {height: 424, width: 348, x: -66, y: 530};
 const metanDims = {height: 424, width: 364, x: 1642, y: 530};
 
-type ImageRun = {
-  frameCount: number;
-  path: string;
-};
+type SubtitleMode = "auto-from-audio";
+type SubtitleLineBreak = "single" | "double";
 
 export type ResolveManifestItem = {
   durationFrames: number;
@@ -45,8 +39,17 @@ export type ResolveManifestItem = {
   trackType: "audio" | "video";
 };
 
+export type ResolveSubtitleConfig = {
+  charsPerLine: number;
+  lineBreak: SubtitleLineBreak;
+  mode: SubtitleMode;
+  sourceAudioTrackIndex: number;
+  srtPath: string;
+  trackName: string;
+};
+
 export type ResolveExportManifest = {
-  audioTracks: Array<{index: number; name: string}>;
+  audioTracks: Array<{audioType?: string; index: number; name: string}>;
   exportDir: string;
   fps: number;
   generatedAt: string;
@@ -56,6 +59,7 @@ export type ResolveExportManifest = {
   projectId: string;
   projectName: string;
   startTimecode: string;
+  subtitle?: ResolveSubtitleConfig;
   timelineName: string;
   videoTracks: Array<{index: number; name: string}>;
   width: number;
@@ -79,20 +83,6 @@ type ExportOptions = {
   log?: (message: string) => void;
 };
 
-const buildRuns = (paths: string[]): ImageRun[] => {
-  const runs: ImageRun[] = [];
-  for (const framePath of paths) {
-    const previous = runs[runs.length - 1];
-    if (previous && previous.path === framePath) {
-      previous.frameCount += 1;
-      continue;
-    }
-
-    runs.push({path: framePath, frameCount: 1});
-  }
-  return runs;
-};
-
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
   log(`ffmpeg ${args.join(" ")}`);
   await execFileAsync("ffmpeg", ["-y", ...args], {
@@ -101,197 +91,30 @@ const runFfmpeg = async (args: string[], log: (message: string) => void) => {
   });
 };
 
-const escapeConcatPath = (filePath: string) =>
-  filePath.replace(/\\/g, "/").replace(/'/g, "'\\''");
-
-const writeConcatList = async (
-  runs: ImageRun[],
-  fps: number,
-  listPath: string,
-) => {
-  const lines: string[] = [];
-  for (const run of runs) {
-    lines.push(`file '${escapeConcatPath(run.path)}'`);
-    lines.push(`duration ${(run.frameCount / fps).toFixed(6)}`);
-  }
-  if (runs.length > 0) {
-    lines.push(`file '${escapeConcatPath(runs[runs.length - 1].path)}'`);
-  }
-  await fsPromises.writeFile(listPath, `${lines.join("\n")}\n`, "utf8");
+const formatTimecode = (frame: number, fps: number) => {
+  const totalMs = Math.round((frame / fps) * 1000);
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((totalMs % 60_000) / 1000);
+  const milliseconds = totalMs % 1000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
+    seconds,
+  ).padStart(2, "0")},${String(milliseconds).padStart(3, "0")}`;
 };
 
-const writeMediaConcatList = async (filePaths: string[], listPath: string) => {
-  const lines = filePaths.map((filePath) => `file '${escapeConcatPath(filePath)}'`);
-  await fsPromises.writeFile(listPath, `${lines.join("\n")}\n`, "utf8");
-};
-
-const concatLayerFiles = async (
-  filePaths: string[],
-  outputPath: string,
-  tempDir: string,
-  fps: number,
-  mode: "background" | "alpha",
-  log: (message: string) => void,
-) => {
-  if (filePaths.length === 0) {
-    throw new Error(`No media files were provided for concat: ${outputPath}`);
-  }
-
-  const listPath = path.join(
-    tempDir,
-    `${path.basename(outputPath, path.extname(outputPath))}.concat.txt`,
-  );
-  await writeMediaConcatList(filePaths, listPath);
-
-  await runFfmpeg(
-    mode === "background"
-      ? [
-          "-f",
-          "concat",
-          "-safe",
-          "0",
-          "-i",
-          listPath,
-          "-map",
-          "0:v:0",
-          "-r",
-          `${fps}`,
-          "-an",
-          "-c:v",
-          "h264_nvenc",
-          "-preset",
-          "p5",
-          "-cq",
-          "18",
-          "-pix_fmt",
-          "yuv420p",
-          outputPath,
-        ]
-      : [
-          "-f",
-          "concat",
-          "-safe",
-          "0",
-          "-i",
-          listPath,
-          "-map",
-          "0:v:0",
-          "-r",
-          `${fps}`,
-          "-an",
-          "-c:v",
-          "prores_ks",
-          "-profile:v",
-          "4",
-          "-pix_fmt",
-          "yuva444p10le",
-          outputPath,
-        ],
-    log,
-  );
-};
-
-const getCharacterDefinition = (project: TalkVideoProject, speaker: SpeakerId) => {
-  const character = project.characters.find((item) => item.id === speaker);
-  if (!character) {
-    throw new Error(`Character definition for ${speaker} was not found.`);
-  }
-  return character;
-};
-
-const getUpperBodyPath = (
-  projectPath: string,
-  project: TalkVideoProject,
-  speaker: SpeakerId,
-  mouth: string,
-  blink: boolean,
-) => {
-  const character = getCharacterDefinition(project, speaker);
-  if (blink) {
-    return resolveFromProject(projectPath, character.visual.blinkUpperPath);
-  }
-
-  const upperDir = resolveFromProject(projectPath, character.visual.upperDir);
-  const expression = character.visual.defaultExpression ?? "normal";
-  return path.join(upperDir, `${expression}-${mouth}.png`);
-};
-
-const isBlinking = (
-  absoluteFrame: number,
-  speaker: SpeakerId,
-  blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
-) =>
-  blinkWindowsBySpeaker[speaker].some(
-    (window) => absoluteFrame >= window.start && absoluteFrame < window.start + window.duration,
-  );
-
-const buildCharacterRuns = (
-  projectPath: string,
-  project: TalkVideoProject,
-  speaker: SpeakerId,
-  cueIndex: number,
-  cueStartFrame: number,
-  sourceDurationFrames: number,
-  mouthTimingByCue: string[][],
-  blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
-  activeSpeaker: SpeakerId,
-) => {
-  const paths: string[] = [];
-  const mouthFrames = mouthTimingByCue[cueIndex] ?? [];
-
-  for (let localFrame = 0; localFrame < sourceDurationFrames; localFrame += 1) {
-    const absoluteFrame = cueStartFrame + localFrame;
-    const blink = isBlinking(absoluteFrame, speaker, blinkWindowsBySpeaker);
-    const mouth =
-      speaker === activeSpeaker ? mouthFrames[localFrame] ?? "closed" : "closed";
-    paths.push(getUpperBodyPath(projectPath, project, speaker, mouth, blink));
-  }
-
-  return buildRuns(paths);
-};
-
-const buildAmplitudeExpression = (
-  startAmplitude: number,
-  targetAmplitude: number,
-  endAmplitude: number,
-  frameCount: number,
-) => {
-  const easingFrames = Math.max(2, Math.min(10, Math.floor(frameCount / 6)));
-  const easeOutStart = Math.max(easingFrames, frameCount - easingFrames);
-
-  if (easingFrames <= 0 || (startAmplitude === targetAmplitude && targetAmplitude === endAmplitude)) {
-    return `${targetAmplitude}`;
-  }
-
-  const startExpr =
-    startAmplitude === targetAmplitude
-      ? `${targetAmplitude}`
-      : `${startAmplitude}+(${targetAmplitude - startAmplitude})*(n/${easingFrames})`;
-  const endExpr =
-    endAmplitude === targetAmplitude
-      ? `${targetAmplitude}`
-      : `${targetAmplitude}+(${endAmplitude - targetAmplitude})*((n-${easeOutStart})/${easingFrames})`;
-
-  return `if(lt(n\\,${easingFrames})\\,${startExpr}\\,if(gte(n\\,${easeOutStart})\\,${endExpr}\\,${targetAmplitude}))`;
-};
-
-const buildBobYExpression = (
-  baseY: number,
-  cueStartFrame: number,
-  radiansDivisor: number,
-  startAmplitude: number,
-  targetAmplitude: number,
-  endAmplitude: number,
-  frameCount: number,
-) => {
-  const amplitudeExpr = buildAmplitudeExpression(
-    startAmplitude,
-    targetAmplitude,
-    endAmplitude,
-    frameCount,
-  );
-  return `${baseY + 1}+(${amplitudeExpr})*sin((${cueStartFrame}+n)/${radiansDivisor})`;
-};
+const buildSrt = (cues: CueRuntime[], fps: number) =>
+  cues
+    .map((cue, index) =>
+      [
+        `${index + 1}`,
+        `${formatTimecode(cue.startFrame, fps)} --> ${formatTimecode(
+          cue.startFrame + cue.durationFrames,
+          fps,
+        )}`,
+        cue.subtitleText || cue.text,
+      ].join("\n"),
+    )
+    .join("\n\n");
 
 const buildBackgroundFilter = () =>
   [
@@ -303,9 +126,27 @@ const buildBackgroundFilter = () =>
     "drawbox=x=104:y=824:w=400:h=150:color=0xffd2ee@0.16:t=fill",
   ].join(",");
 
-const exportBackgroundClip = async (
+const getCharacterDefinition = (project: TalkVideoProject, speaker: SpeakerId) => {
+  const character = project.characters.find((item) => item.id === speaker);
+  if (!character) {
+    throw new Error(`Character definition for ${speaker} was not found.`);
+  }
+  return character;
+};
+
+const getClosedUpperBodyPath = (
+  projectPath: string,
+  project: TalkVideoProject,
+  speaker: SpeakerId,
+) => {
+  const character = getCharacterDefinition(project, speaker);
+  const upperDir = resolveFromProject(projectPath, character.visual.upperDir);
+  const expression = character.visual.defaultExpression ?? "normal";
+  return path.join(upperDir, `${expression}-closed.png`);
+};
+
+const exportBackgroundStill = async (
   cue: CueRuntime,
-  fps: number,
   outputPath: string,
   log: (message: string) => void,
 ) => {
@@ -313,23 +154,22 @@ const exportBackgroundClip = async (
     throw new Error(`Cue ${cue.index + 1} is missing background assets.`);
   }
 
-  const durationSeconds = cue.durationFrames / fps;
   await runFfmpeg(
     [
       "-f",
       "lavfi",
       "-i",
-      `color=c=0x9eb7f2:s=1920x1080:r=${fps}:d=${durationSeconds}`,
+      "color=c=0x9eb7f2:s=1920x1080:r=1:d=1",
       "-loop",
       "1",
       "-t",
-      `${durationSeconds}`,
+      "1",
       "-i",
       cue.topAssetPath,
       "-loop",
       "1",
       "-t",
-      `${durationSeconds}`,
+      "1",
       "-i",
       cue.cardAssetPath,
       "-filter_complex",
@@ -342,164 +182,69 @@ const exportBackgroundClip = async (
       ].join(";"),
       "-map",
       "[v]",
-      "-an",
       "-frames:v",
-      `${cue.durationFrames}`,
-      "-c:v",
-      "h264_nvenc",
-      "-preset",
-      "p5",
-      "-cq",
-      "18",
+      "1",
       "-pix_fmt",
-      "yuv420p",
+      "rgba",
       outputPath,
     ],
     log,
   );
 };
 
-const exportSubtitleClip = async (
-  cue: CueRuntime,
-  fps: number,
+const exportCharacterStill = async (
+  projectPath: string,
+  project: TalkVideoProject,
+  speaker: SpeakerId,
   outputPath: string,
   log: (message: string) => void,
 ) => {
-  if (!cue.subtitleAssetPath || !fs.existsSync(cue.subtitleAssetPath)) {
-    throw new Error(`Cue ${cue.index + 1} is missing subtitle asset.`);
-  }
+  const dims = speaker === "zundamon" ? zundamonDims : metanDims;
+  const upperPath = getClosedUpperBodyPath(projectPath, project, speaker);
+  const speakerFilter =
+    speaker === "zundamon"
+      ? `[1:v]scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba,hflip[char]`
+      : `[1:v]scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba[char]`;
 
-  const durationSeconds = cue.durationFrames / fps;
   await runFfmpeg(
     [
       "-f",
       "lavfi",
       "-i",
-      `color=c=black@0.0:s=1920x1080:r=${fps}:d=${durationSeconds}`,
+      "color=c=black@0.0:s=1920x1080:r=1:d=1",
       "-loop",
       "1",
       "-t",
-      `${durationSeconds}`,
+      "1",
       "-i",
-      cue.subtitleAssetPath,
+      upperPath,
       "-filter_complex",
       [
         "[0:v]format=rgba,colorchannelmixer=aa=0[base]",
-        "[1:v]format=rgba[sub]",
-        "[base][sub]overlay=0:852:shortest=1:eof_action=pass[v]",
+        speakerFilter,
+        `[base][char]overlay=${dims.x}:${dims.y}:shortest=1:eof_action=pass[v]`,
       ].join(";"),
       "-map",
       "[v]",
-      "-an",
       "-frames:v",
-      `${cue.durationFrames}`,
-      "-c:v",
-      "prores_ks",
-      "-profile:v",
-      "4",
+      "1",
       "-pix_fmt",
-      "yuva444p10le",
+      "rgba",
       outputPath,
     ],
     log,
   );
 };
 
-const exportCharacterClip = async (
-  projectPath: string,
-  project: TalkVideoProject,
-  cue: CueRuntime,
-  previousCue: CueRuntime | undefined,
-  nextCue: CueRuntime | undefined,
-  speaker: SpeakerId,
-  mouthTimingByCue: string[][],
-  blinkWindowsBySpeaker: Record<SpeakerId, Array<{start: number; duration: number}>>,
-  tempDir: string,
+const normalizeAudio = async (
+  inputPath: string,
   outputPath: string,
   log: (message: string) => void,
 ) => {
-  const fps = project.timeline.fps;
-  const durationSeconds = cue.durationFrames / fps;
-  const frameCount = cue.durationFrames;
-  const listPath = path.join(tempDir, `${speaker}-cue-${String(cue.index + 1).padStart(2, "0")}.txt`);
-  const runs = buildCharacterRuns(
-    projectPath,
-    project,
-    speaker,
-    cue.index,
-    cue.startFrame,
-    cue.durationFrames,
-    mouthTimingByCue,
-    blinkWindowsBySpeaker,
-    cue.speaker,
-  );
-  await writeConcatList(runs, fps, listPath);
-
-  const isZundamon = speaker === "zundamon";
-  const dims = isZundamon ? zundamonDims : metanDims;
-  const startAmplitude = previousCue?.speaker === speaker ? 7 : 3;
-  const targetAmplitude = cue.speaker === speaker ? 7 : 3;
-  const endAmplitude = nextCue?.speaker === speaker ? 7 : 3;
-  const bobY = buildBobYExpression(
-    dims.y,
-    cue.startFrame,
-    isZundamon ? 28 : 31,
-    startAmplitude,
-    targetAmplitude,
-    endAmplitude,
-    frameCount,
-  );
-
-  const charFilter = isZundamon
-    ? `[1:v]fps=${fps},scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba,hflip[char]`
-    : `[1:v]fps=${fps},scale=${dims.width}:${dims.height}:flags=lanczos,format=rgba[char]`;
-
-  await runFfmpeg(
-    [
-      "-f",
-      "lavfi",
-      "-i",
-      `color=c=black@0.0:s=1920x1080:r=${fps}:d=${durationSeconds}`,
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      listPath,
-      "-filter_complex",
-      [
-        "[0:v]format=rgba,colorchannelmixer=aa=0[base]",
-        charFilter,
-        `[base][char]overlay=${dims.x}:${bobY}:shortest=1:eof_action=pass[v]`,
-      ].join(";"),
-      "-map",
-      "[v]",
-      "-an",
-      "-frames:v",
-      `${cue.durationFrames}`,
-      "-c:v",
-      "prores_ks",
-      "-profile:v",
-      "4",
-      "-pix_fmt",
-      "yuva444p10le",
-      outputPath,
-    ],
-    log,
-  );
-};
-
-const copyAudio = async (
-  projectPath: string,
-  project: TalkVideoProject,
-  outputPath: string,
-  log: (message: string) => void,
-) => {
-  const audioPath = resolveFromProject(projectPath, project.timeline.audioMix.finalMixPath);
   await runFfmpeg(
     [
       "-i",
-      audioPath,
+      inputPath,
       "-map",
       "0:a:0",
       "-ar",
@@ -522,160 +267,103 @@ export const exportProjectForResolve = async (
   const log = options?.log ?? (() => {});
   const absoluteProjectPath = path.resolve(projectPath);
   const exportDir = resolveFromProject(absoluteProjectPath, project.renderTargets.resolve.exportDir);
-  const tempDir = path.join(exportDir, ".tmp");
+  await fsPromises.rm(exportDir, {force: true, recursive: true});
   const backgroundsDir = path.join(exportDir, "media", "backgrounds");
-  const subtitlesDir = path.join(exportDir, "media", "subtitles");
-  const zundamonDir = path.join(exportDir, "media", "characters", "zundamon");
-  const metanDir = path.join(exportDir, "media", "characters", "metan");
+  const charactersDir = path.join(exportDir, "media", "characters");
   const audioDir = path.join(exportDir, "media", "audio");
-  const tracksDir = path.join(exportDir, "media", "tracks");
+  const subtitlesDir = path.join(exportDir, "subtitles");
 
   await fsPromises.mkdir(backgroundsDir, {recursive: true});
-  await fsPromises.mkdir(subtitlesDir, {recursive: true});
-  await fsPromises.mkdir(zundamonDir, {recursive: true});
-  await fsPromises.mkdir(metanDir, {recursive: true});
+  await fsPromises.mkdir(charactersDir, {recursive: true});
   await fsPromises.mkdir(audioDir, {recursive: true});
-  await fsPromises.mkdir(tracksDir, {recursive: true});
-  await fsPromises.mkdir(tempDir, {recursive: true});
+  await fsPromises.mkdir(subtitlesDir, {recursive: true});
 
-  const {cues, mouthTimingByCue} = loadCueRuntime(absoluteProjectPath, project);
-  const blinkWindowsBySpeaker = createBlinkWindowsBySpeaker(project.timeline.durationFrames);
+  const {cues} = loadCueRuntime(absoluteProjectPath, project);
   const manifestItems: ResolveManifestItem[] = [];
-  const backgroundCuePaths: string[] = [];
-  const zundamonCuePaths: string[] = [];
-  const metanCuePaths: string[] = [];
-  const subtitleCuePaths: string[] = [];
+  const fps = project.timeline.fps;
 
-  const audioPath = path.join(audioDir, "final-mix.wav");
-  await copyAudio(absoluteProjectPath, project, audioPath, log);
+  const zundamonStillPath = path.join(charactersDir, "zundamon.png");
+  const metanStillPath = path.join(charactersDir, "metan.png");
+  await exportCharacterStill(absoluteProjectPath, project, "zundamon", zundamonStillPath, log);
+  await exportCharacterStill(absoluteProjectPath, project, "metan", metanStillPath, log);
 
   for (const cue of cues) {
     const suffix = String(cue.index + 1).padStart(2, "0");
-    const backgroundPath = path.join(backgroundsDir, `cue-${suffix}.mp4`);
-    const zundamonPath = path.join(zundamonDir, `cue-${suffix}.mov`);
-    const metanPath = path.join(metanDir, `cue-${suffix}.mov`);
-    const subtitlePath = path.join(subtitlesDir, `cue-${suffix}.mov`);
+    const backgroundPath = path.join(backgroundsDir, `cue-${suffix}.png`);
+    await exportBackgroundStill(cue, backgroundPath, log);
 
-    await exportBackgroundClip(cue, project.timeline.fps, backgroundPath, log);
-    await exportCharacterClip(
-      absoluteProjectPath,
-      project,
-      cue,
-      cues[cue.index - 1],
-      cues[cue.index + 1],
-      "zundamon",
-      mouthTimingByCue,
-      blinkWindowsBySpeaker,
-      tempDir,
-      zundamonPath,
-      log,
+    manifestItems.push(
+      {
+        durationFrames: cue.durationFrames,
+        id: `background-${suffix}`,
+        path: backgroundPath,
+        recordFrame: cue.startFrame,
+        trackIndex: 1,
+        trackType: "video",
+      },
+      {
+        durationFrames: cue.durationFrames,
+        id: `zundamon-${suffix}`,
+        path: zundamonStillPath,
+        recordFrame: cue.startFrame,
+        trackIndex: 2,
+        trackType: "video",
+      },
+      {
+        durationFrames: cue.durationFrames,
+        id: `metan-${suffix}`,
+        path: metanStillPath,
+        recordFrame: cue.startFrame,
+        trackIndex: 3,
+        trackType: "video",
+      },
     );
-    await exportCharacterClip(
-      absoluteProjectPath,
-      project,
-      cue,
-      cues[cue.index - 1],
-      cues[cue.index + 1],
-      "metan",
-      mouthTimingByCue,
-      blinkWindowsBySpeaker,
-      tempDir,
-      metanPath,
-      log,
-    );
-    await exportSubtitleClip(cue, project.timeline.fps, subtitlePath, log);
-
-    backgroundCuePaths.push(backgroundPath);
-    zundamonCuePaths.push(zundamonPath);
-    metanCuePaths.push(metanPath);
-    subtitleCuePaths.push(subtitlePath);
   }
 
-  const backgroundTrackPath = path.join(tracksDir, "background.mp4");
-  const zundamonTrackPath = path.join(tracksDir, "zundamon.mov");
-  const metanTrackPath = path.join(tracksDir, "metan.mov");
-  const subtitleTrackPath = path.join(tracksDir, "subtitle.mov");
+  const narrationPath = path.join(audioDir, "narration.wav");
+  const bgmPath = path.join(audioDir, "bgm.wav");
+  await normalizeAudio(
+    resolveFromProject(absoluteProjectPath, project.timeline.audioMix.combinedNarrationPath),
+    narrationPath,
+    log,
+  );
+  if (project.timeline.audioMix.bgmPath) {
+    await normalizeAudio(
+      resolveFromProject(absoluteProjectPath, project.timeline.audioMix.bgmPath),
+      bgmPath,
+      log,
+    );
+  }
 
-  await concatLayerFiles(
-    backgroundCuePaths,
-    backgroundTrackPath,
-    tempDir,
-    project.timeline.fps,
-    "background",
-    log,
-  );
-  await concatLayerFiles(
-    zundamonCuePaths,
-    zundamonTrackPath,
-    tempDir,
-    project.timeline.fps,
-    "alpha",
-    log,
-  );
-  await concatLayerFiles(
-    metanCuePaths,
-    metanTrackPath,
-    tempDir,
-    project.timeline.fps,
-    "alpha",
-    log,
-  );
-  await concatLayerFiles(
-    subtitleCuePaths,
-    subtitleTrackPath,
-    tempDir,
-    project.timeline.fps,
-    "alpha",
-    log,
-  );
-
-  manifestItems.push(
-    {
+  manifestItems.push({
+    durationFrames: project.timeline.durationFrames,
+    id: "audio-narration",
+    path: narrationPath,
+    recordFrame: 0,
+    trackIndex: 1,
+    trackType: "audio",
+  });
+  if (project.timeline.audioMix.bgmPath && fs.existsSync(bgmPath)) {
+    manifestItems.push({
       durationFrames: project.timeline.durationFrames,
-      id: "background-track",
-      path: backgroundTrackPath,
-      recordFrame: 0,
-      trackIndex: 4,
-      trackType: "video",
-    },
-    {
-      durationFrames: project.timeline.durationFrames,
-      id: "zundamon-track",
-      path: zundamonTrackPath,
-      recordFrame: 0,
-      trackIndex: 3,
-      trackType: "video",
-    },
-    {
-      durationFrames: project.timeline.durationFrames,
-      id: "metan-track",
-      path: metanTrackPath,
+      id: "audio-bgm",
+      path: bgmPath,
       recordFrame: 0,
       trackIndex: 2,
-      trackType: "video",
-    },
-    {
-      durationFrames: project.timeline.durationFrames,
-      id: "subtitle-track",
-      path: subtitleTrackPath,
-      recordFrame: 0,
-      trackIndex: 1,
-      trackType: "video",
-    },
-    {
-      durationFrames: project.timeline.durationFrames,
-      id: "audio-final-mix",
-      path: audioPath,
-      recordFrame: 0,
-      trackIndex: 1,
       trackType: "audio",
-    },
-  );
+    });
+  }
+
+  const srtPath = path.join(subtitlesDir, "timeline.srt");
+  await fsPromises.writeFile(srtPath, `${buildSrt(cues, fps)}\n`, "utf8");
 
   const manifest: ResolveExportManifest = {
-    audioTracks: [{index: 1, name: "Mix"}],
+    audioTracks: [
+      {audioType: "stereo", index: 1, name: "Narration"},
+      ...(project.timeline.audioMix.bgmPath ? [{audioType: "stereo", index: 2, name: "BGM"}] : []),
+    ],
     exportDir,
-    fps: project.timeline.fps,
+    fps,
     generatedAt: new Date().toISOString(),
     height: project.timeline.height,
     items: manifestItems,
@@ -683,12 +371,19 @@ export const exportProjectForResolve = async (
     projectId: project.project.id,
     projectName: `${project.project.title} Resolve Auto`,
     startTimecode: project.timeline.startTimecode ?? "01:00:00:00",
+    subtitle: {
+      charsPerLine: 24,
+      lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
+      mode: "auto-from-audio",
+      sourceAudioTrackIndex: 1,
+      srtPath,
+      trackName: "Subtitle",
+    },
     timelineName: `${project.project.title} Timeline`,
     videoTracks: [
-      {index: 1, name: "Subtitle"},
-      {index: 2, name: "Metan"},
-      {index: 3, name: "Zundamon"},
-      {index: 4, name: "Background"},
+      {index: 1, name: "Background"},
+      {index: 2, name: "Zundamon"},
+      {index: 3, name: "Metan"},
     ],
     width: project.timeline.width,
   };
