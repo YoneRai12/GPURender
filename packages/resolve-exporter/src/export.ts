@@ -38,6 +38,7 @@ const speakerTrackMap = {
 type SubtitleMode = "auto-from-audio";
 type SubtitleLineBreak = "single" | "double";
 type ResolveTimelinePropertyValue = boolean | number | string;
+type ResolveMouthState = "closed" | "mid" | "open";
 
 export type ResolveTimelineProperties = Record<string, ResolveTimelinePropertyValue>;
 
@@ -60,8 +61,27 @@ export type ResolveSubtitleConfig = {
   trackName: string;
 };
 
+export type ResolveCharacterAnimationConfig = {
+  assets: {
+    blink: string;
+    closed: string;
+    mid: string;
+    open: string;
+  };
+  blinkByFrame: boolean[];
+  bob: {
+    amplitude: number;
+    frequencyHz: number;
+    phaseOffset: number;
+  };
+  itemId: string;
+  mouthByFrame: ResolveMouthState[];
+  speaker: SpeakerId;
+};
+
 export type ResolveExportManifest = {
   audioTracks: Array<{audioType?: string; index: number; name: string}>;
+  characterAnimations?: ResolveCharacterAnimationConfig[];
   exportDir: string;
   fps: number;
   generatedAt: string;
@@ -207,6 +227,89 @@ const getClosedUpperBodyPath = (
   const upperDir = resolveFromProject(projectPath, character.visual.upperDir);
   const expression = character.visual.defaultExpression ?? "normal";
   return path.join(upperDir, `${expression}-closed.png`);
+};
+
+const getUpperBodyAssetPaths = (
+  projectPath: string,
+  project: TalkVideoProject,
+  speaker: SpeakerId,
+) => {
+  const character = getCharacterDefinition(project, speaker);
+  const upperDir = resolveFromProject(projectPath, character.visual.upperDir);
+  const expression = character.visual.defaultExpression ?? "normal";
+  return {
+    blink: resolveFromProject(projectPath, character.visual.blinkUpperPath),
+    closed: path.join(upperDir, `${expression}-closed.png`),
+    mid: path.join(upperDir, `${expression}-mid.png`),
+    open: path.join(upperDir, `${expression}-open.png`),
+  } as const;
+};
+
+const parseMouthTimingByCue = async (
+  projectPath: string,
+  project: TalkVideoProject,
+): Promise<ResolveMouthState[][]> => {
+  const mouthDataPath = resolveFromProject(projectPath, project.sources.mouthDataPath);
+  const source = await fsPromises.readFile(mouthDataPath, "utf8");
+  const start = source.indexOf("[");
+  const end = source.lastIndexOf("] as const");
+  if (start < 0 || end < 0) {
+    throw new Error(`Could not parse mouth timing source: ${mouthDataPath}`);
+  }
+  const literal = source.slice(start, end + 1);
+  return Function(`"use strict"; return (${literal});`)() as ResolveMouthState[][];
+};
+
+const buildCharacterMouthByFrame = ({
+  cues,
+  mouthByCue,
+  speaker,
+  timelineDurationFrames,
+}: {
+  cues: CueRuntime[];
+  mouthByCue: ResolveMouthState[][];
+  speaker: SpeakerId;
+  timelineDurationFrames: number;
+}) => {
+  const mouthByFrame = Array.from({length: timelineDurationFrames}, () => "closed" as ResolveMouthState);
+  for (const cue of cues) {
+    if (cue.speaker !== speaker) {
+      continue;
+    }
+
+    const cueMouth = mouthByCue[cue.index] ?? [];
+    for (let offset = 0; offset < cue.durationFrames; offset += 1) {
+      const frame = cue.startFrame + offset;
+      if (frame >= timelineDurationFrames) {
+        break;
+      }
+      mouthByFrame[frame] = cueMouth[offset] ?? "closed";
+    }
+  }
+  return mouthByFrame;
+};
+
+const buildBlinkByFrame = ({
+  seedOffset,
+  timelineDurationFrames,
+}: {
+  seedOffset: number;
+  timelineDurationFrames: number;
+}) => {
+  const blinkByFrame = Array.from({length: timelineDurationFrames}, () => false);
+  let currentFrame = 48 + seedOffset * 19;
+  while (currentFrame < timelineDurationFrames) {
+    const blinkLength = 3 + ((currentFrame + seedOffset) % 3);
+    for (let index = 0; index < blinkLength; index += 1) {
+      const frame = currentFrame + index;
+      if (frame < timelineDurationFrames) {
+        blinkByFrame[frame] = true;
+      }
+    }
+    const gap = 90 + ((currentFrame * 7 + seedOffset * 17) % 80);
+    currentFrame += gap;
+  }
+  return blinkByFrame;
 };
 
 const getConversationAudioPath = (
@@ -467,36 +570,27 @@ export const exportProjectForResolve = async (
   await fsPromises.mkdir(subtitlesDir, {recursive: true});
 
   const {cues} = loadCueRuntime(absoluteProjectPath, project);
+  const mouthByCue = await parseMouthTimingByCue(absoluteProjectPath, project);
   const manifestItems: ResolveManifestItem[] = [];
   const fps = project.timeline.fps;
 
   const backgroundBasePath = path.join(backgroundsDir, "background-base.png");
   await exportBackgroundBaseStill(backgroundBasePath, log);
+  manifestItems.push({
+    durationFrames: project.timeline.durationFrames,
+    id: "background-base",
+    path: backgroundBasePath,
+    recordFrame: 0,
+    trackIndex: 1,
+    trackType: "video",
+  });
 
-  const zundamonUpperPath = getClosedUpperBodyPath(absoluteProjectPath, project, "zundamon");
-  const metanUpperPath = getClosedUpperBodyPath(absoluteProjectPath, project, "metan");
+  const zundamonAssets = getUpperBodyAssetPaths(absoluteProjectPath, project, "zundamon");
+  const metanAssets = getUpperBodyAssetPaths(absoluteProjectPath, project, "metan");
   const zundamonStillPath = path.join(charactersDir, "zundamon-upper.png");
   const metanStillPath = path.join(charactersDir, "metan-upper.png");
-  const zundamonClipPath = path.join(charactersDir, "zundamon-upper.mov");
-  const metanClipPath = path.join(charactersDir, "metan-upper.mov");
-  await copyAsset(zundamonUpperPath, zundamonStillPath);
-  await copyAsset(metanUpperPath, metanStillPath);
-  await exportStillVideoClip({
-    durationFrames: project.timeline.durationFrames,
-    fps,
-    inputPath: zundamonStillPath,
-    log,
-    outputPath: zundamonClipPath,
-    withAlpha: true,
-  });
-  await exportStillVideoClip({
-    durationFrames: project.timeline.durationFrames,
-    fps,
-    inputPath: metanStillPath,
-    log,
-    outputPath: metanClipPath,
-    withAlpha: true,
-  });
+  await copyAsset(zundamonAssets.closed, zundamonStillPath);
+  await copyAsset(metanAssets.closed, metanStillPath);
 
   const zundamonSize = await readImageDimensions(zundamonStillPath, log);
   const metanSize = await readImageDimensions(metanStillPath, log);
@@ -522,7 +616,7 @@ export const exportProjectForResolve = async (
     {
       durationFrames: project.timeline.durationFrames,
       id: "zundamon-full",
-      path: zundamonClipPath,
+      path: zundamonStillPath,
       properties: createPlacedStillProperties({
         flipX: zundamonPlacement.flipX,
         frameHeight: project.timeline.height,
@@ -535,13 +629,13 @@ export const exportProjectForResolve = async (
         targetY: zundamonPlacement.targetY,
       }),
       recordFrame: 0,
-      trackIndex: 2,
+      trackIndex: 4,
       trackType: "video",
     },
     {
       durationFrames: project.timeline.durationFrames,
       id: "metan-full",
-      path: metanClipPath,
+      path: metanStillPath,
       properties: createPlacedStillProperties({
         flipX: metanPlacement.flipX,
         frameHeight: project.timeline.height,
@@ -554,7 +648,7 @@ export const exportProjectForResolve = async (
         targetY: metanPlacement.targetY,
       }),
       recordFrame: 0,
-      trackIndex: 3,
+      trackIndex: 5,
       trackType: "video",
     },
   );
@@ -568,25 +662,24 @@ export const exportProjectForResolve = async (
     const cueDir = path.join(backgroundsDir, `cue-${suffix}`);
     const topPath = path.join(cueDir, "top.png");
     const cardPath = path.join(cueDir, "card.png");
-    const backgroundCueClipPath = path.join(cueDir, "background.mp4");
     await copyAsset(cue.topAssetPath, topPath);
     await copyAsset(cue.cardAssetPath, cardPath);
-    await exportBackgroundCueClip({
-      backgroundBasePath,
-      cardPath,
+
+    manifestItems.push({
       durationFrames: cue.durationFrames,
-      fps,
-      log,
-      outputPath: backgroundCueClipPath,
-      topPath,
+      id: `top-${suffix}`,
+      path: topPath,
+      recordFrame: cue.startFrame,
+      trackIndex: 2,
+      trackType: "video",
     });
 
     manifestItems.push({
       durationFrames: cue.durationFrames,
-      id: `background-${suffix}`,
-      path: backgroundCueClipPath,
+      id: `card-${suffix}`,
+      path: cardPath,
       recordFrame: cue.startFrame,
-      trackIndex: 1,
+      trackIndex: 3,
       trackType: "video",
     });
   }
@@ -615,6 +708,49 @@ export const exportProjectForResolve = async (
   const srtPath = path.join(subtitlesDir, "timeline.srt");
   await fsPromises.writeFile(srtPath, `${buildSrt(cues, fps)}\n`, "utf8");
 
+  const characterAnimations: ResolveCharacterAnimationConfig[] = [
+    {
+      assets: zundamonAssets,
+      blinkByFrame: buildBlinkByFrame({
+        seedOffset: 1,
+        timelineDurationFrames: project.timeline.durationFrames,
+      }),
+      bob: {
+        amplitude: 0.011,
+        frequencyHz: 0.36,
+        phaseOffset: 0.0,
+      },
+      itemId: "zundamon-full",
+      mouthByFrame: buildCharacterMouthByFrame({
+        cues,
+        mouthByCue,
+        speaker: "zundamon",
+        timelineDurationFrames: project.timeline.durationFrames,
+      }),
+      speaker: "zundamon",
+    },
+    {
+      assets: metanAssets,
+      blinkByFrame: buildBlinkByFrame({
+        seedOffset: 2,
+        timelineDurationFrames: project.timeline.durationFrames,
+      }),
+      bob: {
+        amplitude: 0.01,
+        frequencyHz: 0.33,
+        phaseOffset: 0.75,
+      },
+      itemId: "metan-full",
+      mouthByFrame: buildCharacterMouthByFrame({
+        cues,
+        mouthByCue,
+        speaker: "metan",
+        timelineDurationFrames: project.timeline.durationFrames,
+      }),
+      speaker: "metan",
+    },
+  ];
+
   const manifest: ResolveExportManifest = {
     audioTracks: [
       {
@@ -628,6 +764,7 @@ export const exportProjectForResolve = async (
         name: speakerTrackMap.metan.name,
       },
     ],
+    characterAnimations,
     exportDir,
     fps,
     generatedAt: new Date().toISOString(),
@@ -648,8 +785,10 @@ export const exportProjectForResolve = async (
     timelineName: `${project.project.title} Timeline`,
     videoTracks: [
       {index: 1, name: "Background"},
-      {index: 2, name: "Zundamon"},
-      {index: 3, name: "Metan"},
+      {index: 2, name: "TopUI"},
+      {index: 3, name: "Card"},
+      {index: 4, name: "Zundamon"},
+      {index: 5, name: "Metan"},
     ],
     width: project.timeline.width,
   };
