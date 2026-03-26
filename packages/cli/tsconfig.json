@@ -24,6 +24,9 @@
     },
     {
       "path": "../gpu-renderer"
+    },
+    {
+      "path": "../resolve-exporter"
     }
   ]
 }

@@ -4,9 +4,15 @@ import path from "node:path";
 import process from "node:process";
 
 import {renderProjectGpuDemo} from "@gpu-render/gpu-renderer";
+import {
+  exportProjectForResolve,
+  installResolveMenuLoader,
+  loadResolveManifest,
+} from "@gpu-render/resolve-exporter";
 import {createDryRunRenderPlan, loadProject, validateProjectFile} from "@gpu-render/shared";
 
 type CommandArgs = {
+  manifest?: string;
   project?: string;
   out?: string;
   cpuTempLimit?: number;
@@ -25,6 +31,12 @@ const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
 
     if (token === "--project" && next) {
       args.project = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--manifest" && next) {
+      args.manifest = next;
       index += 1;
       continue;
     }
@@ -68,6 +80,12 @@ const printUsage = () => {
   console.log(
     "  gpu-render render --project ./examples/public-safe-sample/project.json --out ./out/public-safe-sample-gpu.mp4 --render-fps 60 --cpu-temp-limit 85 --cooldown-ms 3000",
   );
+  console.log(
+    "  gpu-render resolve-export --project ./examples/public-safe-sample/project.json",
+  );
+  console.log(
+    "  gpu-render resolve-load --manifest ./tmp/resolve-export/project/resolve-export.manifest.json",
+  );
 };
 
 const fail = (message: string): never => {
@@ -80,6 +98,13 @@ const requireProject = (project?: string): string => {
     fail("Missing required --project argument.");
   }
   return project as string;
+};
+
+const requireManifest = (manifest?: string): string => {
+  if (typeof manifest !== "string" || manifest.length === 0) {
+    fail("Missing required --manifest argument.");
+  }
+  return manifest as string;
 };
 
 const handleValidate = (projectPath: string) => {
@@ -151,6 +176,40 @@ const handleRender = async (projectPath: string, args: CommandArgs) => {
   console.log(`Render report written to ${reportPath}`);
 };
 
+const handleResolveExport = async (projectPath: string) => {
+  const result = validateProjectFile(projectPath);
+  if (!result.ok) {
+    handleValidate(projectPath);
+  }
+
+  const project = loadProject(projectPath);
+  const exportResult = await exportProjectForResolve(projectPath, project, {
+    log: (message: string) => console.log(`[resolve-export] ${message}`),
+  });
+
+  console.log(`Resolve export complete: ${exportResult.exportDir}`);
+  console.log(`Manifest: ${exportResult.manifestPath}`);
+  console.log(`Loader: ${exportResult.loaderScriptPath}`);
+};
+
+const handleResolveLoad = async (manifestPath: string) => {
+  try {
+    await loadResolveManifest(manifestPath, {
+      log: (message: string) => console.log(`[resolve-load] ${message}`),
+    });
+    console.log(`Resolve load complete: ${path.resolve(manifestPath)}`);
+    return;
+  } catch (error) {
+    const menuInstall = await installResolveMenuLoader(manifestPath);
+    console.error(
+      `External Resolve scripting was unavailable. Installed menu loader: ${menuInstall.loaderPath}`,
+    );
+    console.error(`Request file: ${menuInstall.requestPath}`);
+    console.error(`Result file: ${menuInstall.resultPath}`);
+    throw error;
+  }
+};
+
 const main = async () => {
   const {command, args} = parseArgs(process.argv.slice(2));
 
@@ -165,6 +224,12 @@ const main = async () => {
       return;
     case "render":
       await handleRender(requireProject(args.project), args);
+      return;
+    case "resolve-export":
+      await handleResolveExport(requireProject(args.project));
+      return;
+    case "resolve-load":
+      await handleResolveLoad(requireManifest(args.manifest));
       return;
     default:
       printUsage();
