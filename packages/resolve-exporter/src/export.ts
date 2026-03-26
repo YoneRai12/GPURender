@@ -102,7 +102,7 @@ type ImageDimensions = {
 
 const resolveExportAudioMode = {
   includeBgm: false,
-  narrationTrackType: "mono" as const,
+  narrationTrackType: "stereo" as const,
 };
 
 const runFfmpeg = async (args: string[], log: (message: string) => void) => {
@@ -372,7 +372,7 @@ const createPlacedStillProperties = ({
   ZoomY: roundProperty(targetHeight / sourceHeight),
 });
 
-const normalizeNarrationAudio = async (
+const normalizeStereoDialogueAudio = async (
   inputPath: string,
   outputPath: string,
   log: (message: string) => void,
@@ -383,33 +383,12 @@ const normalizeNarrationAudio = async (
       inputPath,
       "-map",
       "0:a:0",
+      "-af",
+      "pan=stereo|c0=c0|c1=c0",
       "-ar",
       "48000",
       "-ac",
-      "1",
-      "-c:a",
-      "pcm_s16le",
-      outputPath,
-    ],
-    log,
-  );
-};
-
-const normalizeMonoAudio = async (
-  inputPath: string,
-  outputPath: string,
-  log: (message: string) => void,
-) => {
-  await runFfmpeg(
-    [
-      "-i",
-      inputPath,
-      "-map",
-      "0:a:0",
-      "-ar",
-      "48000",
-      "-ac",
-      "1",
+      "2",
       "-c:a",
       "pcm_s16le",
       outputPath,
@@ -622,7 +601,7 @@ export const exportProjectForResolve = async (
       audioDir,
       `${String(cue.index + 1).padStart(2, "0")}-${cue.speaker}.wav`,
     );
-    await normalizeMonoAudio(cueAudioPath, cueAudioOutputPath, log);
+    await normalizeStereoDialogueAudio(cueAudioPath, cueAudioOutputPath, log);
     manifestItems.push({
       durationFrames: cue.durationFrames,
       id: `audio-${String(cue.index + 1).padStart(2, "0")}-${cue.speaker}`,
