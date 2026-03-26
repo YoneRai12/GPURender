@@ -120,6 +120,43 @@ const writeConcatList = async (
   await fsPromises.writeFile(listPath, `${lines.join("\n")}\n`, "utf8");
 };
 
+const writeMediaConcatList = async (filePaths: string[], listPath: string) => {
+  const lines = filePaths.map((filePath) => `file '${escapeConcatPath(filePath)}'`);
+  await fsPromises.writeFile(listPath, `${lines.join("\n")}\n`, "utf8");
+};
+
+const concatLayerFiles = async (
+  filePaths: string[],
+  outputPath: string,
+  tempDir: string,
+  log: (message: string) => void,
+) => {
+  if (filePaths.length === 0) {
+    throw new Error(`No media files were provided for concat: ${outputPath}`);
+  }
+
+  const listPath = path.join(
+    tempDir,
+    `${path.basename(outputPath, path.extname(outputPath))}.concat.txt`,
+  );
+  await writeMediaConcatList(filePaths, listPath);
+
+  await runFfmpeg(
+    [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      outputPath,
+    ],
+    log,
+  );
+};
+
 const getCharacterDefinition = (project: TalkVideoProject, speaker: SpeakerId) => {
   const character = project.characters.find((item) => item.id === speaker);
   if (!character) {
@@ -441,28 +478,26 @@ export const exportProjectForResolve = async (
   const zundamonDir = path.join(exportDir, "media", "characters", "zundamon");
   const metanDir = path.join(exportDir, "media", "characters", "metan");
   const audioDir = path.join(exportDir, "media", "audio");
+  const tracksDir = path.join(exportDir, "media", "tracks");
 
   await fsPromises.mkdir(backgroundsDir, {recursive: true});
   await fsPromises.mkdir(subtitlesDir, {recursive: true});
   await fsPromises.mkdir(zundamonDir, {recursive: true});
   await fsPromises.mkdir(metanDir, {recursive: true});
   await fsPromises.mkdir(audioDir, {recursive: true});
+  await fsPromises.mkdir(tracksDir, {recursive: true});
   await fsPromises.mkdir(tempDir, {recursive: true});
 
   const {cues, mouthTimingByCue} = loadCueRuntime(absoluteProjectPath, project);
   const blinkWindowsBySpeaker = createBlinkWindowsBySpeaker(project.timeline.durationFrames);
   const manifestItems: ResolveManifestItem[] = [];
+  const backgroundCuePaths: string[] = [];
+  const zundamonCuePaths: string[] = [];
+  const metanCuePaths: string[] = [];
+  const subtitleCuePaths: string[] = [];
 
   const audioPath = path.join(audioDir, "final-mix.wav");
   await copyAudio(absoluteProjectPath, project, audioPath);
-  manifestItems.push({
-    durationFrames: project.timeline.durationFrames,
-    id: "audio-final-mix",
-    path: audioPath,
-    recordFrame: 0,
-    trackIndex: 1,
-    trackType: "audio",
-  });
 
   for (const cue of cues) {
     const suffix = String(cue.index + 1).padStart(2, "0");
@@ -500,41 +535,64 @@ export const exportProjectForResolve = async (
     );
     await exportSubtitleClip(cue, project.timeline.fps, subtitlePath, log);
 
-    manifestItems.push(
-      {
-        durationFrames: cue.durationFrames,
-        id: `background-${suffix}`,
-        path: backgroundPath,
-        recordFrame: cue.startFrame,
-        trackIndex: 1,
-        trackType: "video",
-      },
-      {
-        durationFrames: cue.durationFrames,
-        id: `zundamon-${suffix}`,
-        path: zundamonPath,
-        recordFrame: cue.startFrame,
-        trackIndex: 2,
-        trackType: "video",
-      },
-      {
-        durationFrames: cue.durationFrames,
-        id: `metan-${suffix}`,
-        path: metanPath,
-        recordFrame: cue.startFrame,
-        trackIndex: 3,
-        trackType: "video",
-      },
-      {
-        durationFrames: cue.durationFrames,
-        id: `subtitle-${suffix}`,
-        path: subtitlePath,
-        recordFrame: cue.startFrame,
-        trackIndex: 4,
-        trackType: "video",
-      },
-    );
+    backgroundCuePaths.push(backgroundPath);
+    zundamonCuePaths.push(zundamonPath);
+    metanCuePaths.push(metanPath);
+    subtitleCuePaths.push(subtitlePath);
   }
+
+  const backgroundTrackPath = path.join(tracksDir, "background.mp4");
+  const zundamonTrackPath = path.join(tracksDir, "zundamon.mov");
+  const metanTrackPath = path.join(tracksDir, "metan.mov");
+  const subtitleTrackPath = path.join(tracksDir, "subtitle.mov");
+
+  await concatLayerFiles(backgroundCuePaths, backgroundTrackPath, tempDir, log);
+  await concatLayerFiles(zundamonCuePaths, zundamonTrackPath, tempDir, log);
+  await concatLayerFiles(metanCuePaths, metanTrackPath, tempDir, log);
+  await concatLayerFiles(subtitleCuePaths, subtitleTrackPath, tempDir, log);
+
+  manifestItems.push(
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "background-track",
+      path: backgroundTrackPath,
+      recordFrame: 0,
+      trackIndex: 1,
+      trackType: "video",
+    },
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "zundamon-track",
+      path: zundamonTrackPath,
+      recordFrame: 0,
+      trackIndex: 2,
+      trackType: "video",
+    },
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "metan-track",
+      path: metanTrackPath,
+      recordFrame: 0,
+      trackIndex: 3,
+      trackType: "video",
+    },
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "subtitle-track",
+      path: subtitleTrackPath,
+      recordFrame: 0,
+      trackIndex: 4,
+      trackType: "video",
+    },
+    {
+      durationFrames: project.timeline.durationFrames,
+      id: "audio-final-mix",
+      path: audioPath,
+      recordFrame: 0,
+      trackIndex: 1,
+      trackType: "audio",
+    },
+  );
 
   const manifest: ResolveExportManifest = {
     audioTracks: [{index: 1, name: "Mix"}],
