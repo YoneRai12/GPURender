@@ -296,6 +296,7 @@ const createAgiDiscussionSegment = async (
 ) => {
   const sourceFps = project.timeline.fps;
   const fps = renderFps;
+  const compositeFps = fps;
   const durationSeconds = cue.durationFrames / sourceFps;
   const renderFrameCount = Math.max(1, Math.round(durationSeconds * fps));
   const zListPath = path.join(tempRoot, `cue-${String(cue.index + 1).padStart(2, "0")}-z.txt`);
@@ -335,10 +336,6 @@ const createAgiDiscussionSegment = async (
   const topPath = cue.topAssetPath && fs.existsSync(cue.topAssetPath) ? cue.topAssetPath : undefined;
   const cardPath =
     cue.cardAssetPath && fs.existsSync(cue.cardAssetPath) ? cue.cardAssetPath : undefined;
-  const subtitleAssetPath =
-    cue.subtitleAssetPath && fs.existsSync(cue.subtitleAssetPath)
-      ? cue.subtitleAssetPath
-      : undefined;
   const compositeWidth = scaleValue(project.timeline.width);
   const compositeHeight = scaleValue(project.timeline.height);
   const subtitleBandY = scaleValue(852);
@@ -353,7 +350,7 @@ const createAgiDiscussionSegment = async (
     zundamonDims.y,
     cue.startFrame,
     sourceFps,
-    fps,
+    compositeFps,
     28,
     zundamonStartAmplitude,
     zundamonTargetAmplitude,
@@ -364,7 +361,7 @@ const createAgiDiscussionSegment = async (
     metanDims.y,
     cue.startFrame,
     sourceFps,
-    fps,
+    compositeFps,
     31,
     metanStartAmplitude,
     metanTargetAmplitude,
@@ -386,39 +383,25 @@ const createAgiDiscussionSegment = async (
     return;
   }
 
-  const filterComplex = subtitleAssetPath
-    ? [
-        `[0:v]${buildBackgroundFilter()}[bg]`,
-        `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
-        `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
-        `[3:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[subtitle]`,
-        `[4:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
-        `[5:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
-        `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
-        `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
-        `[bg4][subtitle]overlay=0:${subtitleBandY}:shortest=1:eof_action=pass[bg5]`,
-        `[bg5]scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
-      ].join(";")
-    : [
-        `[0:v]${buildBackgroundFilter()}[bg]`,
-        `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
-        `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
-        `[3:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip[z]`,
-        `[4:v]fps=${sourceFps},framerate=${fps}:interp_start=0:interp_end=255:scene=100,scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba[m]`,
-        `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
-        `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
-        `[bg2][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
-        `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
-        `[bg4]drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(228)}:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(6)}:color=white@0.65:t=fill,${buildSubtitleDrawtext(subtitleTextPath, primaryColor, subtitleTextY)},scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
-      ].join(";");
+  const filterComplex = [
+    `[0:v]${buildBackgroundFilter()}[bg]`,
+    `[1:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[top]`,
+    `[2:v]scale=iw*${supersampleScale}:ih*${supersampleScale}:flags=lanczos,format=rgba[card]`,
+    `[3:v]fps=${sourceFps},scale=${scaleValue(zundamonDims.width)}:${scaleValue(zundamonDims.height)}:flags=lanczos,format=rgba,hflip,minterpolate=fps=${fps}:mi_mode=blend[z]`,
+    `[4:v]fps=${sourceFps},scale=${scaleValue(metanDims.width)}:${scaleValue(metanDims.height)}:flags=lanczos,format=rgba,minterpolate=fps=${fps}:mi_mode=blend[m]`,
+    `[bg][top]overlay=0:0:shortest=1:eof_action=pass[bg1]`,
+    `[bg1][card]overlay=${scaleValue(255)}:${scaleValue(138)}:shortest=1:eof_action=pass[bg2]`,
+    `[bg2]drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(228)}:color=0xf7eef7@0.96:t=fill,drawbox=x=0:y=${subtitleBandY}:w=${compositeWidth}:h=${scaleValue(6)}:color=white@0.65:t=fill[bg2a]`,
+    `[bg2a][z]overlay=${scaleValue(zundamonDims.x)}:${zundamonBobY}:shortest=1:eof_action=pass[bg3]`,
+    `[bg3][m]overlay=${scaleValue(metanDims.x)}:${metanBobY}:shortest=1:eof_action=pass[bg4]`,
+    `[bg4]${buildSubtitleDrawtext(subtitleTextPath, primaryColor, subtitleTextY)},scale=${project.timeline.width}:${project.timeline.height}:flags=lanczos[v]`,
+  ].join(";");
 
   const ffmpegArgs = [
     "-f",
     "lavfi",
     "-i",
-    `color=c=0x9eb7f2:s=${compositeWidth}x${compositeHeight}:r=${fps}:d=${durationSeconds}`,
+    `color=c=0x9eb7f2:s=${compositeWidth}x${compositeHeight}:r=${compositeFps}:d=${durationSeconds}`,
     "-loop",
     "1",
     "-t",
@@ -432,17 +415,6 @@ const createAgiDiscussionSegment = async (
     "-i",
     cardPath,
   ];
-
-  if (subtitleAssetPath) {
-    ffmpegArgs.push(
-      "-loop",
-      "1",
-      "-t",
-      `${durationSeconds}`,
-      "-i",
-      subtitleAssetPath,
-    );
-  }
 
   ffmpegArgs.push(
     "-f",
