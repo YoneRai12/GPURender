@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b packages/shared packages/gpu-renderer packages/cli",
+    "build": "tsc -b packages/shared packages/gpu-renderer packages/resolve-exporter packages/cli",
     "typecheck": "tsc -b --pretty false",
     "cli": "node ./packages/cli/dist/index.js",
     "validate:example": "node ./packages/cli/dist/index.js validate --project ./examples/public-safe-sample/project.json",

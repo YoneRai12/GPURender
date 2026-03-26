@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@gpu-render/gpu-renderer": "0.1.0",
+    "@gpu-render/resolve-exporter": "0.1.0",
     "@gpu-render/shared": "0.1.0"
   }
 }
