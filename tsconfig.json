@@ -5,6 +5,12 @@
       "path": "./packages/shared"
     },
     {
+      "path": "./packages/gpu-renderer"
+    },
+    {
+      "path": "./packages/resolve-exporter"
+    },
+    {
       "path": "./packages/cli"
     }
   ]
