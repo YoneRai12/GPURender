@@ -419,6 +419,13 @@
                 ]
               }
             },
+            "subtitleMode": {
+              "type": "string",
+              "enum": [
+                "overlay-video",
+                "native-srt"
+              ]
+            },
             "outputPath": {
               "$ref": "#/$defs/pathString"
             }

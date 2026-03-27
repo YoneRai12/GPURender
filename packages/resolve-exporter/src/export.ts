@@ -8,6 +8,8 @@ import {promisify} from "node:util";
 import {loadCueRuntime, type CueRuntime} from "@gpu-render/gpu-renderer";
 import {resolveFromProject, type SpeakerId, type TalkVideoProject} from "@gpu-render/shared";
 
+import {ensureResolveReady} from "./runtime.js";
+
 const execFileAsync = promisify(execFile);
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -60,6 +62,7 @@ const characterCornerLayout = {
 
 type SubtitleMode = "auto-from-audio" | "import-srt";
 type SubtitleLineBreak = "single" | "double";
+type ResolveSubtitleDeliveryMode = "overlay-video" | "native-srt";
 type ResolveTimelinePropertyValue = boolean | number | string;
 type ResolveMouthState = "closed" | "mid" | "open";
 
@@ -979,6 +982,12 @@ export const exportProjectForResolve = async (
   const mouthByCue = await parseMouthTimingByCue(absoluteProjectPath, project);
   const manifestItems: ResolveManifestItem[] = [];
   const fps = project.timeline.fps;
+  const subtitleDeliveryMode: ResolveSubtitleDeliveryMode =
+    project.renderTargets.resolve.subtitleMode ?? "overlay-video";
+  const subtitleTrackNames = project.style.subtitleBand.trackNames ?? {};
+  const subtitleCharsPerLine = project.style.subtitleBand.charsPerLine ?? 24;
+  const subtitleLineBreak: SubtitleLineBreak =
+    (project.style.subtitleBand.maxLines ?? 2) > 1 ? "double" : "single";
 
   const backgroundBasePath = path.join(backgroundsDir, "background-base.png");
   await exportBackgroundBaseStill(backgroundBasePath, log);
@@ -1162,6 +1171,29 @@ export const exportProjectForResolve = async (
     },
   );
 
+  const subtitles: ResolveSubtitleConfig[] = [];
+  if (subtitleDeliveryMode === "native-srt") {
+    for (const speaker of Object.keys(speakerTrackMap) as SpeakerId[]) {
+      const srtText = buildSpeakerSrt({cues, fps, speaker}).trim();
+      if (!srtText) {
+        continue;
+      }
+
+      const srtPath = path.join(subtitlesDir, `${speaker}.srt`);
+      await fsPromises.writeFile(srtPath, `${srtText}\n`, "utf8");
+      subtitles.push({
+        charsPerLine: subtitleCharsPerLine,
+        color: getCharacterDefinition(project, speaker).visual.accent,
+        lineBreak: subtitleLineBreak,
+        mode: "import-srt",
+        speaker,
+        srtPath,
+        trackIndex: subtitles.length + 1,
+        trackName: subtitleTrackNames[speaker] ?? `${speakerTrackMap[speaker].name}字幕`,
+      });
+    }
+  }
+
   for (const cue of cues) {
     if (!cue.topAssetPath || !cue.cardAssetPath) {
       throw new Error(`Cue ${cue.index + 1} is missing top/card assets.`);
@@ -1182,14 +1214,6 @@ export const exportProjectForResolve = async (
       outputPath: scenePath,
       topPath,
     });
-    await exportSubtitleOverlayStill({
-      color: getCharacterDefinition(project, cue.speaker).visual.accent,
-      height: project.timeline.height,
-      log,
-      outputPath: subtitlePath,
-      text: formatSubtitleOverlayText(cue.text),
-      width: project.timeline.width,
-    });
 
     manifestItems.push({
       durationFrames: cue.durationFrames,
@@ -1200,14 +1224,25 @@ export const exportProjectForResolve = async (
       trackType: "video",
     });
 
-    manifestItems.push({
-      durationFrames: cue.durationFrames,
-      id: `subtitle-${suffix}`,
-      path: subtitlePath,
-      recordFrame: cue.startFrame,
-      trackIndex: 4,
-      trackType: "video",
-    });
+    if (subtitleDeliveryMode === "overlay-video") {
+      await exportSubtitleOverlayStill({
+        color: getCharacterDefinition(project, cue.speaker).visual.accent,
+        height: project.timeline.height,
+        log,
+        outputPath: subtitlePath,
+        text: formatSubtitleOverlayText(cue.text),
+        width: project.timeline.width,
+      });
+
+      manifestItems.push({
+        durationFrames: cue.durationFrames,
+        id: `subtitle-${suffix}`,
+        path: subtitlePath,
+        recordFrame: cue.startFrame,
+        trackIndex: 4,
+        trackType: "video",
+      });
+    }
   }
 
   for (const cue of cues) {
@@ -1297,15 +1332,23 @@ export const exportProjectForResolve = async (
     projectId: project.project.id,
     projectName: `${project.project.title} Resolve Auto`,
     startTimecode: project.timeline.startTimecode ?? "01:00:00:00",
+    subtitles: subtitles.length > 0 ? subtitles : undefined,
     timelineName: `${project.project.title} Timeline ${new Date()
       .toISOString()
       .replace(/[:.]/g, "-")}`,
-    videoTracks: [
-      {index: 1, name: "Scene"},
-      {index: 2, name: "Zundamon"},
-      {index: 3, name: "Metan"},
-      {index: 4, name: "Subtitle"},
-    ],
+    videoTracks:
+      subtitleDeliveryMode === "overlay-video"
+        ? [
+            {index: 1, name: "Scene"},
+            {index: 2, name: "Zundamon"},
+            {index: 3, name: "Metan"},
+            {index: 4, name: "Subtitle"},
+          ]
+        : [
+            {index: 1, name: "Scene"},
+            {index: 2, name: "Zundamon"},
+            {index: 3, name: "Metan"},
+          ],
     width: project.timeline.width,
   };
 
@@ -1330,6 +1373,7 @@ export const loadResolveManifest = async (
     throw new Error(`Resolve loader script was not found: ${loaderScriptPath}`);
   }
 
+  await ensureResolveReady({autoLaunch: true, log});
   log(`python ${loaderScriptPath} ${absoluteManifestPath}`);
   await execFileAsync("python", [loaderScriptPath, absoluteManifestPath], {
     windowsHide: false,
