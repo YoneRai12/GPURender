@@ -30,9 +30,21 @@ const characterLayoutDefaults = {
   targetHeight: 424,
   visibleWidth: 280,
 };
+const subtitleTrackNameDefaults = {
+  metan: "\u3081\u305f\u3093\u5b57\u5e55",
+  zundamon: "\u305a\u3093\u3060\u3082\u3093\u5b57\u5e55",
+} as const;
+const speakerFacingDefaults = {
+  metan: "left",
+  zundamon: "right",
+} as const satisfies Record<SpeakerId, "left" | "right">;
+const speakerPinnedDefaults = {
+  metan: "right",
+  zundamon: "left",
+} as const satisfies Record<SpeakerId, "left" | "right">;
 const speakerTrackMap = {
-  metan: {index: 2, name: "Metan"},
-  zundamon: {index: 1, name: "Zundamon"},
+  metan: {index: 2, name: "\u3081\u305f\u3093"},
+  zundamon: {index: 1, name: "\u305a\u3093\u3060\u3082\u3093"},
 } as const satisfies Record<SpeakerId, {index: number; name: string}>;
 
 type SubtitleMode = "auto-from-audio" | "import-srt";
@@ -532,29 +544,59 @@ const prepareExportDir = async (requestedDir: string) => {
 };
 
 const createAutoCharacterLayout = ({
-  flipX,
+  project,
   frameHeight,
   frameWidth,
   sourceHeight,
   sourceWidth,
   speaker,
 }: {
-  flipX: boolean;
+  project: TalkVideoProject;
   frameHeight: number;
   frameWidth: number;
   sourceHeight: number;
   sourceWidth: number;
   speaker: SpeakerId;
 }) => {
-  const targetHeight = characterLayoutDefaults.targetHeight;
+  const characterLayout = project.style.characterLayout ?? {};
+  const activeScale = characterLayout.activeScale ?? 1;
+  const speakerScale =
+    speaker === "zundamon"
+      ? characterLayout.zundamonScale ?? 1
+      : characterLayout.metanScale ?? 1;
+  const targetHeight = Math.round(
+    (characterLayout.targetHeight ?? characterLayoutDefaults.targetHeight) *
+      activeScale *
+      speakerScale,
+  );
   const targetWidth = Math.round((sourceWidth / sourceHeight) * targetHeight);
-  const visibleWidth = Math.min(targetWidth - 12, characterLayoutDefaults.visibleWidth);
+  const visibleWidth = Math.min(
+    targetWidth - 12,
+    Math.round(characterLayout.visibleWidth ?? characterLayoutDefaults.visibleWidth),
+  );
+  const pinned =
+    speaker === "zundamon"
+      ? characterLayout.zundamonPinned ?? speakerPinnedDefaults.zundamon
+      : characterLayout.metanPinned ?? speakerPinnedDefaults.metan;
+  const facing =
+    speaker === "zundamon"
+      ? characterLayout.zundamonFacing ?? speakerFacingDefaults.zundamon
+      : characterLayout.metanFacing ?? speakerFacingDefaults.metan;
+  const offsetX =
+    speaker === "zundamon"
+      ? characterLayout.zundamonOffsetX ?? 0
+      : characterLayout.metanOffsetX ?? 0;
+  const offsetY =
+    speaker === "zundamon"
+      ? characterLayout.zundamonOffsetY ?? 0
+      : characterLayout.metanOffsetY ?? 0;
   const targetX =
-    speaker === "zundamon" ? visibleWidth - targetWidth : frameWidth - visibleWidth;
-  const targetY = frameHeight - characterLayoutDefaults.bottomMargin - targetHeight;
+    pinned === "left" ? visibleWidth - targetWidth + offsetX : frameWidth - visibleWidth + offsetX;
+  const targetY =
+    frameHeight - (characterLayout.bottomMargin ?? characterLayoutDefaults.bottomMargin) - targetHeight + offsetY;
 
   return {
-    flipX,
+    flipX: facing === "right",
     targetHeight,
     targetWidth,
     targetX,
@@ -612,7 +654,7 @@ export const exportProjectForResolve = async (
   const metanSize = await readImageDimensions(metanStillPath, log);
 
   const zundamonPlacement = createAutoCharacterLayout({
-    flipX: true,
+    project,
     frameHeight: project.timeline.height,
     frameWidth: project.timeline.width,
     sourceHeight: zundamonSize.height,
@@ -620,7 +662,7 @@ export const exportProjectForResolve = async (
     speaker: "zundamon",
   });
   const metanPlacement = createAutoCharacterLayout({
-    flipX: false,
+    project,
     frameHeight: project.timeline.height,
     frameWidth: project.timeline.width,
     sourceHeight: metanSize.height,
@@ -721,9 +763,15 @@ export const exportProjectForResolve = async (
     });
   }
 
+  const subtitleCharsPerLine = project.style.subtitleBand.charsPerLine ?? 24;
+  const subtitleTrackNames = {
+    zundamon: project.style.subtitleBand.trackNames?.zundamon ?? subtitleTrackNameDefaults.zundamon,
+    metan: project.style.subtitleBand.trackNames?.metan ?? subtitleTrackNameDefaults.metan,
+  };
+
   const subtitleConfigs: ResolveSubtitleConfig[] = [
     {
-      charsPerLine: 24,
+      charsPerLine: subtitleCharsPerLine,
       color: project.style.subtitleBand.speakerColors?.zundamon ?? "#8adf47",
       lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
       mode: "import-srt",
@@ -733,7 +781,7 @@ export const exportProjectForResolve = async (
       trackName: "ずんだもん字幕",
     },
     {
-      charsPerLine: 24,
+      charsPerLine: subtitleCharsPerLine,
       color: project.style.subtitleBand.speakerColors?.metan ?? "#9a6cff",
       lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
       mode: "import-srt",
@@ -743,6 +791,9 @@ export const exportProjectForResolve = async (
       trackName: "めたん字幕",
     },
   ];
+
+  subtitleConfigs[0].trackName = subtitleTrackNames.zundamon;
+  subtitleConfigs[1].trackName = subtitleTrackNames.metan;
 
   await Promise.all(
     subtitleConfigs.map((subtitleConfig) =>

@@ -52,6 +52,8 @@ export type TalkVideoProject = {
       speakerColors?: Partial<Record<SpeakerId, string>>;
       maxLines?: number;
       lineBreakRule?: string;
+      charsPerLine?: number;
+      trackNames?: Partial<Record<SpeakerId, string>>;
     };
     cardLayout?: {
       mainCardWidth?: number;
@@ -60,9 +62,19 @@ export type TalkVideoProject = {
     };
     characterLayout?: {
       zundamonFacing?: string;
+      metanFacing?: string;
       zundamonPinned?: string;
       metanPinned?: string;
       activeScale?: number;
+      targetHeight?: number;
+      bottomMargin?: number;
+      visibleWidth?: number;
+      zundamonOffsetX?: number;
+      zundamonOffsetY?: number;
+      metanOffsetX?: number;
+      metanOffsetY?: number;
+      zundamonScale?: number;
+      metanScale?: number;
     };
   };
   sources: {
