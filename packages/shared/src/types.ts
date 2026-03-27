@@ -95,6 +95,7 @@ export type TalkVideoProject = {
     resolve: {
       exportDir: string;
       outputPath?: string;
+      subtitleMode?: "overlay-video" | "native-srt";
       timelineFormatPreference: Array<"otio" | "fcpxml">;
     };
     gpu: {

@@ -5,20 +5,33 @@ import process from "node:process";
 
 import {renderProjectGpuDemo} from "@gpu-render/gpu-renderer";
 import {
+  ensureResolveReady,
   exportProjectForResolve,
   installResolveMenuLoader,
   loadResolveManifest,
+  renderResolveCurrent,
+  syncResolveAudioFolder,
 } from "@gpu-render/resolve-exporter";
 import {createDryRunRenderPlan, loadProject, validateProjectFile} from "@gpu-render/shared";
 
 type CommandArgs = {
+  bin?: string;
+  customName?: string;
+  folder?: string;
   manifest?: string;
+  noStart?: boolean;
+  outDir?: string;
+  preset?: string;
   project?: string;
+  projectName?: string;
+  recursive?: boolean;
   out?: string;
   cpuTempLimit?: number;
   cooldownMs?: number;
   segmentSeconds?: number;
   renderFps?: number;
+  timelineName?: string;
+  wait?: boolean;
 };
 
 const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
@@ -47,6 +60,48 @@ const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
       continue;
     }
 
+    if (token === "--out-dir" && next) {
+      args.outDir = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--folder" && next) {
+      args.folder = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--bin" && next) {
+      args.bin = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--project-name" && next) {
+      args.projectName = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--timeline-name" && next) {
+      args.timelineName = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--preset" && next) {
+      args.preset = next;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--custom-name" && next) {
+      args.customName = next;
+      index += 1;
+      continue;
+    }
+
     if (token === "--cpu-temp-limit" && next) {
       args.cpuTempLimit = Number.parseFloat(next);
       index += 1;
@@ -68,6 +123,21 @@ const parseArgs = (argv: string[]): {command?: string; args: CommandArgs} => {
     if (token === "--render-fps" && next) {
       args.renderFps = Number.parseInt(next, 10);
       index += 1;
+      continue;
+    }
+
+    if (token === "--wait") {
+      args.wait = true;
+      continue;
+    }
+
+    if (token === "--recursive") {
+      args.recursive = true;
+      continue;
+    }
+
+    if (token === "--no-start") {
+      args.noStart = true;
     }
   }
 
@@ -85,6 +155,11 @@ const printUsage = () => {
   );
   console.log(
     "  gpu-render resolve-load --manifest ./tmp/resolve-export/project/resolve-export.manifest.json",
+  );
+  console.log("  gpu-render resolve-open");
+  console.log("  gpu-render resolve-sync-audio --folder ./voices --bin Voices");
+  console.log(
+    "  gpu-render resolve-render-current --preset YouTube --out-dir ./renders --custom-name take-01 --wait",
   );
 };
 
@@ -105,6 +180,13 @@ const requireManifest = (manifest?: string): string => {
     fail("Missing required --manifest argument.");
   }
   return manifest as string;
+};
+
+const requireFolder = (folder?: string): string => {
+  if (typeof folder !== "string" || folder.length === 0) {
+    fail("Missing required --folder argument.");
+  }
+  return folder as string;
 };
 
 const handleValidate = (projectPath: string) => {
@@ -210,6 +292,42 @@ const handleResolveLoad = async (manifestPath: string) => {
   }
 };
 
+const handleResolveOpen = async () => {
+  const result = await ensureResolveReady({
+    autoLaunch: true,
+    log: (message: string) => console.log(`[resolve-open] ${message}`),
+    timeoutMs: 15000,
+  });
+  console.log(`Resolve is ready: ${result.productName ?? "DaVinci Resolve"}`);
+};
+
+const handleResolveSyncAudio = async (args: CommandArgs) => {
+  const result = await syncResolveAudioFolder({
+    binName: args.bin,
+    folderPath: requireFolder(args.folder),
+    log: (message: string) => console.log(`[resolve-sync-audio] ${message}`),
+    projectName: args.projectName,
+    recursive: args.recursive,
+  });
+  console.log(
+    `Resolve audio sync complete: ${result.importedCount}/${result.discoveredCount} imported into ${result.binName}`,
+  );
+};
+
+const handleResolveRenderCurrent = async (args: CommandArgs) => {
+  const result = await renderResolveCurrent({
+    customName: args.customName,
+    log: (message: string) => console.log(`[resolve-render-current] ${message}`),
+    outputDir: args.outDir,
+    presetName: args.preset,
+    projectName: args.projectName,
+    start: !args.noStart,
+    timelineName: args.timelineName,
+    wait: args.wait,
+  });
+  console.log(`Resolve render job queued for ${result.timelineName}`);
+};
+
 const main = async () => {
   const {command, args} = parseArgs(process.argv.slice(2));
 
@@ -230,6 +348,15 @@ const main = async () => {
       return;
     case "resolve-load":
       await handleResolveLoad(requireManifest(args.manifest));
+      return;
+    case "resolve-open":
+      await handleResolveOpen();
+      return;
+    case "resolve-sync-audio":
+      await handleResolveSyncAudio(args);
+      return;
+    case "resolve-render-current":
+      await handleResolveRenderCurrent(args);
       return;
     default:
       printUsage();
