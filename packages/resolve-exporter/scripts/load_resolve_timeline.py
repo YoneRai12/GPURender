@@ -478,14 +478,14 @@ def _create_subtitles(resolve, media_pool, target_folder, timeline, manifest):
     }
 
 
-def _apply_default_render_settings(project):
+def _apply_default_render_settings(project, manifest):
     if not hasattr(project, "SetRenderSettings"):
         return {"applied": False, "reason": "set-render-settings-unavailable"}
 
-    settings = {
-        "ExportSubtitle": True,
-        "SubtitleFormat": "BurnIn",
-    }
+    has_subtitles = bool(manifest.get("subtitles"))
+    settings = {"ExportSubtitle": bool(has_subtitles)}
+    if has_subtitles:
+        settings["SubtitleFormat"] = "BurnIn"
     ok = project.SetRenderSettings(settings)
     return {
         "applied": bool(ok),
@@ -566,7 +566,7 @@ def main():
     )
     subtitle_result = _create_subtitles(resolve, media_pool, target_folder, timeline, manifest)
     fusion_result = _apply_character_fusions(created_video_items_by_id, manifest)
-    render_settings_result = _apply_default_render_settings(project)
+    render_settings_result = _apply_default_render_settings(project, manifest)
     timeline.SetCurrentTimecode(manifest["startTimecode"])
 
     project_manager.SaveProject()
