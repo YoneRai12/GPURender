@@ -31,11 +31,11 @@ const characterLayoutDefaults = {
   visibleWidth: 280,
 };
 const speakerTrackMap = {
-  metan: {index: 2, name: "四国めたん"},
-  zundamon: {index: 1, name: "ずんだもん"},
+  metan: {index: 2, name: "Metan"},
+  zundamon: {index: 1, name: "Zundamon"},
 } as const satisfies Record<SpeakerId, {index: number; name: string}>;
 
-type SubtitleMode = "auto-from-audio";
+type SubtitleMode = "auto-from-audio" | "import-srt";
 type SubtitleLineBreak = "single" | "double";
 type ResolveTimelinePropertyValue = boolean | number | string;
 type ResolveMouthState = "closed" | "mid" | "open";
@@ -54,10 +54,12 @@ export type ResolveManifestItem = {
 
 export type ResolveSubtitleConfig = {
   charsPerLine: number;
+  color?: string;
   lineBreak: SubtitleLineBreak;
   mode: SubtitleMode;
-  sourceAudioTrackIndex: number;
+  speaker?: SpeakerId;
   srtPath: string;
+  trackIndex: number;
   trackName: string;
 };
 
@@ -91,7 +93,7 @@ export type ResolveExportManifest = {
   projectId: string;
   projectName: string;
   startTimecode: string;
-  subtitle?: ResolveSubtitleConfig;
+  subtitles?: ResolveSubtitleConfig[];
   timelineName: string;
   videoTracks: Array<{index: number; name: string}>;
   width: number;
@@ -199,6 +201,20 @@ const buildSrt = (cues: CueRuntime[], fps: number) =>
       ].join("\n"),
     )
     .join("\n\n");
+
+const buildSpeakerSrt = ({
+  cues,
+  fps,
+  speaker,
+}: {
+  cues: CueRuntime[];
+  fps: number;
+  speaker: SpeakerId;
+}) =>
+  buildSrt(
+    cues.filter((cue) => cue.speaker === speaker),
+    fps,
+  );
 
 const buildBackgroundFilter = () =>
   [
@@ -705,8 +721,42 @@ export const exportProjectForResolve = async (
     });
   }
 
-  const srtPath = path.join(subtitlesDir, "timeline.srt");
-  await fsPromises.writeFile(srtPath, `${buildSrt(cues, fps)}\n`, "utf8");
+  const subtitleConfigs: ResolveSubtitleConfig[] = [
+    {
+      charsPerLine: 24,
+      color: project.style.subtitleBand.speakerColors?.zundamon ?? "#8adf47",
+      lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
+      mode: "import-srt",
+      speaker: "zundamon",
+      srtPath: path.join(subtitlesDir, "timeline-zundamon.srt"),
+      trackIndex: 1,
+      trackName: "ずんだもん字幕",
+    },
+    {
+      charsPerLine: 24,
+      color: project.style.subtitleBand.speakerColors?.metan ?? "#9a6cff",
+      lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
+      mode: "import-srt",
+      speaker: "metan",
+      srtPath: path.join(subtitlesDir, "timeline-metan.srt"),
+      trackIndex: 2,
+      trackName: "めたん字幕",
+    },
+  ];
+
+  await Promise.all(
+    subtitleConfigs.map((subtitleConfig) =>
+      fsPromises.writeFile(
+        subtitleConfig.srtPath,
+        `${buildSpeakerSrt({
+          cues,
+          fps,
+          speaker: subtitleConfig.speaker ?? "zundamon",
+        })}\n`,
+        "utf8",
+      ),
+    ),
+  );
 
   const characterAnimations: ResolveCharacterAnimationConfig[] = [
     {
@@ -774,14 +824,7 @@ export const exportProjectForResolve = async (
     projectId: project.project.id,
     projectName: `${project.project.title} Resolve Auto`,
     startTimecode: project.timeline.startTimecode ?? "01:00:00:00",
-    subtitle: {
-      charsPerLine: 24,
-      lineBreak: project.style.subtitleBand.maxLines === 1 ? "single" : "double",
-      mode: "auto-from-audio",
-      sourceAudioTrackIndex: 1,
-      srtPath,
-      trackName: "Subtitle",
-    },
+    subtitles: subtitleConfigs,
     timelineName: `${project.project.title} Timeline`,
     videoTracks: [
       {index: 1, name: "Background"},

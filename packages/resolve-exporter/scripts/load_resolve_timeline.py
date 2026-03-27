@@ -194,6 +194,23 @@ def _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, i
     return created_items_by_id
 
 
+def _list_subtitle_configs(manifest):
+    subtitle_configs = manifest.get("subtitles")
+    if subtitle_configs:
+        return sorted(
+            subtitle_configs,
+            key=lambda item: int(item.get("trackIndex", 1)),
+        )
+
+    legacy = manifest.get("subtitle")
+    if not legacy:
+        return []
+
+    copied = dict(legacy)
+    copied.setdefault("trackIndex", 1)
+    return [copied]
+
+
 def _set_comp_time(comp, frame):
     if hasattr(comp, "_SetCurrentTime"):
         comp._SetCurrentTime(int(frame))
@@ -313,11 +330,12 @@ def _append_subtitle_srt(media_pool, target_folder, timeline, timeline_start_fra
         return {"created": False, "reason": "subtitle-srt-not-found", "srtPath": srt_path}
 
     if timeline.GetTrackCount("subtitle") < 1:
-        ok = timeline.AddTrack("subtitle", {"index": 1})
-        if not ok:
-            return {"created": False, "reason": "add-subtitle-track-failed", "srtPath": srt_path}
+        return {"created": False, "reason": "subtitle-track-missing", "srtPath": srt_path}
 
-    before_count = len(timeline.GetItemListInTrack("subtitle", 1) or [])
+    before_count = 0
+    before_track_count = timeline.GetTrackCount("subtitle")
+    for track_index in range(1, before_track_count + 1):
+        before_count += len(timeline.GetItemListInTrack("subtitle", track_index) or [])
     timeline.SetCurrentTimecode(manifest["startTimecode"])
 
     imported_items = media_pool.ImportMedia([srt_path]) or []
@@ -352,12 +370,15 @@ def _append_subtitle_srt(media_pool, target_folder, timeline, timeline_start_fra
             "srtPath": srt_path,
         }
 
-    after_count = len(timeline.GetItemListInTrack("subtitle", 1) or [])
-    timeline.SetTrackName("subtitle", 1, subtitle_config.get("trackName", "Subtitle"))
+    after_count = 0
+    after_track_count = timeline.GetTrackCount("subtitle")
+    for track_index in range(1, after_track_count + 1):
+        after_count += len(timeline.GetItemListInTrack("subtitle", track_index) or [])
     timeline.SetCurrentTimecode(manifest["startTimecode"])
     return {
         "afterItemCount": after_count,
         "created": after_count > before_count,
+        "itemCountDelta": after_count - before_count,
         "importedCount": len(imported_items),
         "locations": track_locations,
         "method": "import-srt",
@@ -366,26 +387,74 @@ def _append_subtitle_srt(media_pool, target_folder, timeline, timeline_start_fra
 
 
 def _create_subtitles(resolve, media_pool, target_folder, timeline, manifest):
-    subtitle_config = manifest.get("subtitle")
-    if not subtitle_config:
+    subtitle_configs = _list_subtitle_configs(manifest)
+    if not subtitle_configs:
         return {"created": False}
 
-    srt_result = _append_subtitle_srt(
-        media_pool,
-        target_folder,
-        timeline,
-        _timecode_to_frame_count(manifest["startTimecode"], manifest["fps"]),
-        manifest,
-        subtitle_config,
-    )
-    if srt_result.get("created"):
-        return srt_result
+    timeline_start_frame = _timecode_to_frame_count(manifest["startTimecode"], manifest["fps"])
+    import_results = []
+
+    for subtitle_config in reversed(subtitle_configs):
+        ok = timeline.AddTrack("subtitle", {"index": 1})
+        if not ok:
+            import_results.append(
+                {
+                    "created": False,
+                    "reason": "add-subtitle-track-failed",
+                    "trackIndex": subtitle_config.get("trackIndex", 1),
+                    "trackName": subtitle_config.get("trackName", "Subtitle"),
+                }
+            )
+            continue
+
+        srt_result = _append_subtitle_srt(
+            media_pool,
+            target_folder,
+            timeline,
+            timeline_start_frame,
+            manifest,
+            subtitle_config,
+        )
+        srt_result["targetTrackIndex"] = subtitle_config.get("trackIndex", 1)
+        srt_result["trackName"] = subtitle_config.get("trackName", "Subtitle")
+        srt_result["speaker"] = subtitle_config.get("speaker")
+        srt_result["color"] = subtitle_config.get("color")
+        import_results.append(srt_result)
+
+    for result in import_results:
+        actual_track_index = None
+        for location in result.get("locations") or []:
+            if location.get("trackType") == "subtitle":
+                actual_track_index = int(location.get("trackIndex", 0) or 0)
+                break
+
+        if actual_track_index >= 1:
+            timeline.SetTrackName(
+                "subtitle",
+                actual_track_index,
+                result.get("trackName", "Subtitle"),
+            )
+            result["namedTrackIndex"] = actual_track_index
+
+    if all(result.get("created") for result in import_results):
+        return {
+            "created": True,
+            "method": "import-srt-multi",
+            "subtitleTrackCount": timeline.GetTrackCount("subtitle"),
+            "tracks": sorted(import_results, key=lambda item: int(item.get("targetTrackIndex", 1))),
+        }
 
     product_name = str(resolve.GetProductName() or "")
     if "Studio" not in product_name:
-        srt_result["studioFallback"] = "unavailable-in-resolve-free"
-        return srt_result
+        return {
+            "created": False,
+            "method": "import-srt-multi",
+            "studioFallback": "unavailable-in-resolve-free",
+            "subtitleTrackCount": timeline.GetTrackCount("subtitle"),
+            "tracks": sorted(import_results, key=lambda item: int(item.get("targetTrackIndex", 1))),
+        }
 
+    subtitle_config = subtitle_configs[0]
     before_count = timeline.GetTrackCount("subtitle")
     settings = {
         resolve.SUBTITLE_LANGUAGE: resolve.AUTO_CAPTION_AUTO,
@@ -403,9 +472,24 @@ def _create_subtitles(resolve, media_pool, target_folder, timeline, manifest):
     return {
         "created": bool(ok),
         "method": "auto-from-audio",
-        "srtAttempt": srt_result,
+        "srtAttempt": sorted(import_results, key=lambda item: int(item.get("targetTrackIndex", 1))),
         "subtitleTrackCount": after_count,
         "subtitleTrackCountBefore": before_count,
+    }
+
+
+def _apply_default_render_settings(project):
+    if not hasattr(project, "SetRenderSettings"):
+        return {"applied": False, "reason": "set-render-settings-unavailable"}
+
+    settings = {
+        "ExportSubtitle": True,
+        "SubtitleFormat": "BurnIn",
+    }
+    ok = project.SetRenderSettings(settings)
+    return {
+        "applied": bool(ok),
+        "settings": settings,
     }
 
 
@@ -471,23 +555,18 @@ def main():
         timeline.SetTrackName("audio", track["index"], track["name"])
 
     video_items = [item for item in manifest["items"] if item["trackType"] == "video"]
-    narration_items = [
-        item
-        for item in manifest["items"]
-        if item["trackType"] == "audio" and item["trackIndex"] == manifest["subtitle"]["sourceAudioTrackIndex"]
-    ] if manifest.get("subtitle") else [item for item in manifest["items"] if item["trackType"] == "audio"]
-    other_audio_items = [
-        item
-        for item in manifest["items"]
-        if item["trackType"] == "audio"
-        and (not manifest.get("subtitle") or item["trackIndex"] != manifest["subtitle"]["sourceAudioTrackIndex"])
-    ]
+    audio_items = [item for item in manifest["items"] if item["trackType"] == "audio"]
 
     created_video_items_by_id = _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(video_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
-    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(narration_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
-    _append_via_media_pool(media_pool, imported_by_path, timeline_start_frame, sorted(other_audio_items, key=lambda item: (item["recordFrame"], item["trackIndex"])))
+    created_audio_items_by_id = _append_via_media_pool(
+        media_pool,
+        imported_by_path,
+        timeline_start_frame,
+        sorted(audio_items, key=lambda item: (item["recordFrame"], item["trackIndex"])),
+    )
     subtitle_result = _create_subtitles(resolve, media_pool, target_folder, timeline, manifest)
     fusion_result = _apply_character_fusions(created_video_items_by_id, manifest)
+    render_settings_result = _apply_default_render_settings(project)
     timeline.SetCurrentTimecode(manifest["startTimecode"])
 
     project_manager.SaveProject()
@@ -502,6 +581,8 @@ def main():
             "projectName": project.GetName(),
             "subtitle": subtitle_result,
             "fusion": fusion_result,
+            "audioItemIds": sorted(created_audio_items_by_id.keys()),
+            "renderSettings": render_settings_result,
             "timelineName": timeline.GetName(),
             "timelineStartFrame": timeline_start_frame,
         },
