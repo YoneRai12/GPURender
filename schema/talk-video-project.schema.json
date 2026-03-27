@@ -246,9 +246,73 @@
             "lineBreakRule": {
               "type": "string"
             },
+            "charsPerLine": {
+              "type": "integer",
+              "minimum": 1
+            },
             "speakerColors": {
               "type": "object",
               "additionalProperties": true
+            },
+            "trackNames": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "zundamon": {
+                  "type": "string"
+                },
+                "metan": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "characterLayout": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "zundamonFacing": {
+              "type": "string"
+            },
+            "metanFacing": {
+              "type": "string"
+            },
+            "zundamonPinned": {
+              "type": "string"
+            },
+            "metanPinned": {
+              "type": "string"
+            },
+            "activeScale": {
+              "type": "number"
+            },
+            "targetHeight": {
+              "type": "number"
+            },
+            "bottomMargin": {
+              "type": "number"
+            },
+            "visibleWidth": {
+              "type": "number"
+            },
+            "zundamonOffsetX": {
+              "type": "number"
+            },
+            "zundamonOffsetY": {
+              "type": "number"
+            },
+            "metanOffsetX": {
+              "type": "number"
+            },
+            "metanOffsetY": {
+              "type": "number"
+            },
+            "zundamonScale": {
+              "type": "number"
+            },
+            "metanScale": {
+              "type": "number"
             }
           }
         }
